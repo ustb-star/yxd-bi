@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { Document, Download, Filter, Search, View } from '@element-plus/icons-vue';
 import type { EChartsOption } from 'echarts';
 import * as XLSX from 'xlsx';
@@ -238,6 +238,23 @@ const filters = reactive({
   org: '全公司',
   source: 'email' as SourceFilter
 });
+
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1440);
+
+const DASHBOARD_DESIGN_WIDTH = 1760;
+const PAGE_MIN_SCALE = 0.82;
+const pageScale = computed(() => {
+  const fitScale = (viewportWidth.value - 8) / DASHBOARD_DESIGN_WIDTH;
+  return Math.max(PAGE_MIN_SCALE, Math.min(1, fitScale));
+});
+
+const pageScaleStyle = computed(() => ({
+  '--page-scale': String(pageScale.value),
+  '--design-width': `${DASHBOARD_DESIGN_WIDTH}px`
+}));
+
+const chartHeight = (base: number) => `${base}px`;
+
 const sourceSwitchIndex = computed(() => {
   const index = sourceOptions.findIndex((item) => item.value === filters.source);
   return index >= 0 ? index : 0;
@@ -1033,7 +1050,17 @@ watch(
   }
 );
 
+const handleViewportResize = () => {
+  viewportWidth.value = window.innerWidth;
+};
+
+onMounted(() => {
+  handleViewportResize();
+  window.addEventListener('resize', handleViewportResize);
+});
+
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleViewportResize);
   if (switchingTimer !== null) {
     window.clearTimeout(switchingTimer);
     switchingTimer = null;
@@ -1241,11 +1268,13 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 </script>
 
 <template>
-  <div class="page-container">
+  <div class="page-scale-shell">
+    <div class="page-scale-canvas" :style="pageScaleStyle">
+      <div class="page-container">
     <el-space direction="vertical" :size="16" fill class="page-stack">
       <el-card shadow="never" class="header-card">
         <el-row class="top-bar" justify="space-between" align="middle">
-          <el-col :xs="24" :lg="8">
+          <el-col :span="8">
             <el-space :size="12" class="brand-block">
               <div class="brand-icon-wrap">
                 <el-icon>
@@ -1258,8 +1287,8 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
               </el-space>
             </el-space>
           </el-col>
-          <el-col :xs="24" :lg="16" class="top-controls-col">
-            <el-space :size="10" class="top-controls" wrap>
+          <el-col :span="16" class="top-controls-col">
+            <el-space :size="10" class="top-controls" :wrap="false">
               <el-date-picker
                 v-model="dateRange"
                 type="daterange"
@@ -1308,7 +1337,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
       <div class="dashboard-main">
         <div class="dashboard-content" :class="{ 'is-switching': isSwitching }">
         <el-row :gutter="16" class="kpi-row">
-        <el-col v-for="item in kpis" :key="item.label" :xs="24" :sm="12" :lg="6">
+        <el-col v-for="item in kpis" :key="item.label" :span="6">
           <el-card shadow="never" class="kpi-card" :class="{ 'is-active': activeTab === item.tab }" @click="activeTab = item.tab">
             <el-row justify="space-between" align="middle" class="kpi-head">
               <el-text class="kpi-label">{{ item.label }}</el-text>
@@ -1327,7 +1356,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
             <el-space direction="vertical" :size="16" fill class="module-content-stack">
               <template v-if="activeTab === 'conversion'">
                 <el-row :gutter="16">
-                  <el-col :xs="24" :xl="16">
+                  <el-col :span="16">
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head">
                         <el-text tag="b">业务转化漏斗（来源 -> 工单）</el-text>
@@ -1357,10 +1386,10 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                           </el-text>
                         </el-space>
                       </el-row>
-                      <EChart :option="conversionFunnelOption" :active="activeTab === 'conversion'" height="420px" />
+                      <EChart :option="conversionFunnelOption" :active="activeTab === 'conversion'" :height="chartHeight(420)" />
                     </el-card>
                   </el-col>
-                  <el-col :xs="24" :xl="8">
+                  <el-col :span="8">
                     <el-card shadow="never" class="panel-card">
                       <el-space direction="vertical" :size="12" fill class="miss-panel-stack">
                         <el-row justify="space-between" align="middle">
@@ -1380,7 +1409,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                           <el-text tag="b">漏单原因占比</el-text>
                         </el-row>
                         <div class="miss-chart-wrap">
-                          <EChart :option="missReasonOption" :active="activeTab === 'conversion'" height="230px" />
+                          <EChart :option="missReasonOption" :active="activeTab === 'conversion'" :height="chartHeight(230)" />
                         </div>
                         <div class="miss-legend-list">
                           <div v-for="(reason, index) in missReasons" :key="reason.name" class="miss-legend-row">
@@ -1399,7 +1428,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
               <template v-else-if="activeTab === 'efficiency'">
                 <el-row :gutter="16">
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head efficiency-head-grid">
                         <el-text tag="b" class="head-title-left">平均处理时长趋势（min）</el-text>
@@ -1416,10 +1445,10 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                         <span class="head-right-spacer"></span>
                       </el-row>
-                      <EChart :option="efficiencyLineOption" :active="activeTab === 'efficiency'" height="320px" />
+                      <EChart :option="efficiencyLineOption" :active="activeTab === 'efficiency'" :height="chartHeight(320)" />
                     </el-card>
                   </el-col>
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head efficiency-head-grid">
                         <el-text tag="b" class="head-title-left">工作单提交与驳回分布</el-text>
@@ -1433,14 +1462,14 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                         <el-text type="danger" class="kpi-inline head-right-metric">返工率 {{ toPercent(metrics.rework_rate) }}</el-text>
                       </el-row>
-                      <EChart :option="efficiencyBarOption" :active="activeTab === 'efficiency'" height="320px" />
+                      <EChart :option="efficiencyBarOption" :active="activeTab === 'efficiency'" :height="chartHeight(320)" />
                     </el-card>
                   </el-col>
                 </el-row>
               </template>
               <template v-else-if="activeTab === 'quality'">
                 <el-row :gutter="16">
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head">
                         <el-text tag="b">核心质量指标总览</el-text>
@@ -1453,10 +1482,10 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                           <el-text class="panel-rate-text">识别准确率 <span class="panel-rate-value">{{ toPercent(metrics.recognition_accuracy) }}</span></el-text>
                         </el-space>
                       </el-row>
-                      <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" height="320px" />
+                      <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" :height="chartHeight(320)" />
                     </el-card>
                   </el-col>
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head panel-head-wrap">
                         <el-text tag="b">字段来源贡献度分析</el-text>
@@ -1470,7 +1499,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                           </span>
                         </div>
                       </el-row>
-                      <EChart :option="qualitySourceBarOption" :active="activeTab === 'quality'" height="260px" />
+                      <EChart :option="qualitySourceBarOption" :active="activeTab === 'quality'" :height="chartHeight(260)" />
                       <el-row :gutter="8" class="quality-inline-metrics">
                         <el-col v-for="itemRow in qualityDimensionRows.slice(0, 3)" :key="itemRow.label" :span="8">
                           <div class="quality-inline-box">
@@ -1486,7 +1515,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
               <template v-else>
                 <el-space direction="vertical" :size="16" fill class="cost-stack">
                   <el-row :gutter="16">
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-basic metric-card-split">
                         <div class="metric-split">
                           <div class="metric-main">
@@ -1500,7 +1529,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-basic metric-card-split">
                         <div class="metric-split">
                           <div class="metric-main">
@@ -1514,7 +1543,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-rate">
                         <el-row justify="space-between" align="middle" class="metric-card-head">
                           <el-text type="info" size="small">客服投入时间</el-text>
@@ -1530,7 +1559,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-rate">
                         <el-row justify="space-between" align="middle" class="metric-card-head">
                           <el-text type="info" size="small">操作投入时间</el-text>
@@ -1549,7 +1578,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                   </el-row>
 
                   <el-row :gutter="16">
-                    <el-col :xs="24" :xl="16">
+                    <el-col :span="16">
                       <el-card shadow="never" class="panel-card">
                         <el-row justify="space-between" align="middle" class="panel-head">
                           <el-text tag="b">人力成本与单量趋势（按工作单时间聚合）</el-text>
@@ -1562,10 +1591,10 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                             </span>
                           </div>
                         </el-row>
-                        <EChart :option="costTrendOption" :active="activeTab === 'cost'" height="390px" />
+                        <EChart :option="costTrendOption" :active="activeTab === 'cost'" :height="chartHeight(390)" />
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :xl="8">
+                    <el-col :span="8">
                       <el-card shadow="never" class="panel-card">
                         <el-row justify="space-between" align="middle" class="panel-head">
                           <el-text tag="b">客服/操作投入时间趋势（h）</el-text>
@@ -1578,7 +1607,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                             </span>
                           </div>
                         </el-row>
-                        <EChart :option="costHoursOption" :active="activeTab === 'cost'" height="390px" />
+                        <EChart :option="costHoursOption" :active="activeTab === 'cost'" :height="chartHeight(390)" />
                       </el-card>
                     </el-col>
                   </el-row>
@@ -1884,10 +1913,35 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
         <el-table-column prop="submittedValue" label="提交值" min-width="240" />
       </el-table>
     </el-dialog>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.page-scale-shell {
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.page-scale-canvas {
+  --page-scale: 1;
+  --design-width: 1760px;
+  width: var(--design-width);
+  min-width: var(--design-width);
+  margin: 0 auto;
+  zoom: var(--page-scale);
+}
+
+@supports not (zoom: 1) {
+  .page-scale-canvas {
+    transform: scale(var(--page-scale));
+    transform-origin: top center;
+  }
+}
+
 .page-container {
   min-height: 100vh;
   width: 100%;
@@ -1922,6 +1976,12 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
 .module-content {
   width: 100%;
+  min-width: 0;
+}
+
+.module-content :deep(.el-row),
+.module-content :deep(.el-col) {
+  min-width: 0;
 }
 
 .header-card,
@@ -1938,6 +1998,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 .detail-card :deep(.el-card__body),
 .panel-card :deep(.el-card__body) {
   padding: 16px;
+  min-width: 0;
 }
 
 .header-card :deep(.el-card__body) {
@@ -3136,144 +3197,4 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   font-weight: 600;
 }
 
-@media (max-width: 991px) {
-  .page-container {
-    padding: 12px;
-  }
-
-  .search-input {
-    width: 100%;
-  }
-
-  .chart-legend-wrap {
-    max-width: 100%;
-    justify-content: flex-start;
-  }
-
-  .top-controls-col {
-    justify-content: flex-start;
-    margin-top: 6px;
-  }
-
-  .top-controls {
-    justify-content: flex-start;
-  }
-
-  .main-title {
-    font-size: 16px;
-  }
-
-  .control-date-inline,
-  .control-org-inline {
-    width: 100%;
-  }
-
-  .source-switch {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .kpi-value {
-    font-size: 34px;
-  }
-
-  .kpi-label {
-    font-size: 16px;
-  }
-
-  .kpi-trend-tag {
-    font-size: 12px;
-    height: 28px;
-  }
-
-  .panel-rate-text {
-    font-size: 13px;
-  }
-
-  .panel-rate-value {
-    font-size: 16px;
-  }
-
-  .miss-summary-label {
-    font-size: 13px;
-  }
-
-  .miss-summary-value {
-    font-size: 34px;
-  }
-
-  .miss-legend-row {
-    font-size: 13px;
-  }
-
-  .miss-legend-ratio {
-    font-size: 15px;
-  }
-
-  .conversion-head-right {
-    flex-wrap: wrap;
-  }
-
-  .efficiency-head-grid {
-    display: flex !important;
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  .efficiency-center-legend {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .head-right-metric {
-    margin-left: auto;
-  }
-
-  .status-text {
-    font-size: 13px;
-  }
-
-  .metric-card-head {
-    flex-wrap: wrap;
-  }
-
-  .metric-card {
-    height: auto;
-    min-height: 118px;
-  }
-
-  .rate-inline {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .metric-split {
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .metric-side {
-    align-items: flex-start;
-    min-width: 0;
-  }
-
-  .rate-input {
-    width: 110px;
-  }
-
-  .metric-unit {
-    font-size: 16px;
-  }
-
-  .metric-value-row {
-    margin-top: 0;
-  }
-
-  .total-time-text,
-  .accuracy-rate-text,
-  .processing-cost-text,
-  .rework-count-text {
-    font-size: inherit;
-  }
-}
 </style>

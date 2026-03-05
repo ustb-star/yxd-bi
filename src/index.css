@@ -22,7 +22,7 @@ body,
 }
 
 body {
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 /* Global popper theme (teleported nodes): keep selected circle color aligned with primary button */
