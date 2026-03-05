@@ -1212,13 +1212,22 @@ const qualityFieldDetails = computed<FieldDetail[]>(() => {
   });
 });
 
-const qualitySourceTagType = (source: FieldDetail['source']) => {
-  if (source === '托书') return 'success';
-  if (source === '历史单') return 'success';
-  if (source === 'BC') return 'warning';
-  if (source === '邮件') return 'info';
-  if (source === '默认值') return 'danger';
-  return 'info';
+const qualitySourceColorMap: Record<FieldDetail['source'], { color: string; background: string }> = {
+  托书: { color: '#6366f1', background: 'rgba(99, 102, 241, 0.14)' },
+  历史单: { color: '#818cf8', background: 'rgba(129, 140, 248, 0.14)' },
+  BC: { color: '#a5b4fc', background: 'rgba(165, 180, 252, 0.18)' },
+  邮件: { color: '#60a5fa', background: 'rgba(96, 165, 250, 0.14)' },
+  默认值: { color: '#f59e0b', background: 'rgba(245, 158, 11, 0.16)' },
+  '-': { color: '#94a3b8', background: '#f1f5f9' }
+};
+
+const qualitySourceTagStyle = (source: FieldDetail['source']) => {
+  const style = qualitySourceColorMap[source] || qualitySourceColorMap['-'];
+  return {
+    color: style.color,
+    backgroundColor: style.background,
+    borderColor: 'transparent'
+  };
 };
 
 const detailTitleMap: Record<TabName, string> = {
@@ -1865,7 +1874,9 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
         <el-table-column prop="field" label="字段" min-width="140" />
         <el-table-column label="来源" min-width="100">
           <template #default="{ row }">
-            <el-tag effect="light" round size="small" :type="qualitySourceTagType(row.source)">{{ row.source }}</el-tag>
+            <el-tag effect="light" round size="small" class="quality-source-pill" :style="qualitySourceTagStyle(row.source)">
+              {{ row.source }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="rawValue" label="原始值" min-width="240" />
@@ -2761,6 +2772,14 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   border-radius: 6px;
   font-weight: 700;
   padding: 0 8px;
+}
+
+.quality-source-pill {
+  --el-tag-border-color: transparent;
+  border: none;
+  border-radius: 999px;
+  font-weight: 600;
+  padding: 0 10px;
 }
 
 .source-email {
