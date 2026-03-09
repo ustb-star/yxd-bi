@@ -31,11 +31,14 @@ type DashboardData = {
 
 type ExportWorkbookParams = {
   source: SourceType;
+  tenant: string;
   org: string;
   startDate: string;
   endDate: string;
   csRate: number;
   opsRate: number;
+  originalProofreadingMinutes: number;
+  originalAuditMinutes: number;
   data: DashboardData;
 };
 
@@ -95,6 +98,7 @@ const buildConversionSheet = (params: ExportWorkbookParams) => {
   const metrics = params.data.metrics ?? {};
   const funnel = params.data.funnel ?? [];
   const missed = params.data.missed ?? [];
+  const timeline = params.data.efficiency ?? [];
   const details = params.data.tableData ?? [];
   const endDate = params.endDate || params.startDate;
 
@@ -104,18 +108,39 @@ const buildConversionSheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['组织', toText(params.org)]);
+  rows.push(['租户', toText(params.tenant)]);
+  rows.push(['部门/个人', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
   rows.push(['指标', '值']);
-  rows.push(['来源转工单转化率', toPercent(metrics.source_to_ticket_conversion_rate)]);
+  rows.push(['转化率', toPercent(metrics.source_to_ticket_conversion_rate)]);
   rows.push(['漏单率', toPercent(metrics.miss_rate)]);
   addBlankRow(rows);
 
   rows.push(['漏斗阶段', '数量']);
   stageLabels.forEach((label, index) => {
     rows.push([label, toNumber(funnel[index]?.value)]);
+  });
+  addBlankRow(rows);
+
+  rows.push(['业务转化时序', '', '', '', '']);
+  rows.push(['时间', '来源输入', '成功创建工单', '转工作单', '成功提交委托']);
+  const sourceInputTotal = toNumber(funnel[0]?.value);
+  const createdTotal = toNumber(funnel[1]?.value);
+  const transferredTotal = toNumber(funnel[2]?.value);
+  const submittedTotal = toNumber(funnel[3]?.value);
+  const transferPerSubmit = submittedTotal > 0 ? transferredTotal / submittedTotal : 1;
+  const createPerTransfer = transferredTotal > 0 ? createdTotal / transferredTotal : 1;
+  const sourcePerCreate = createdTotal > 0 ? sourceInputTotal / createdTotal : 1;
+
+  timeline.forEach((point) => {
+    const submitted = Math.max(0, toNumber(point.submissions));
+    const transferred = Math.max(submitted, Math.round(submitted * transferPerSubmit));
+    const created = Math.max(transferred, Math.round(transferred * createPerTransfer));
+    const sourceInput = Math.max(created, Math.round(created * sourcePerCreate));
+
+    rows.push([toText(point.tickLabel || point.name), sourceInput, created, transferred, submitted]);
   });
   addBlankRow(rows);
 
@@ -152,7 +177,8 @@ const buildEfficiencySheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['组织', toText(params.org)]);
+  rows.push(['租户', toText(params.tenant)]);
+  rows.push(['部门/个人', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -222,7 +248,8 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['组织', toText(params.org)]);
+  rows.push(['租户', toText(params.tenant)]);
+  rows.push(['部门/个人', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -239,8 +266,8 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
     '工单ID',
     '工作单ID',
     '接单来源',
-    '识别准确率',
-    '信息预填率',
+    '文件识别准确率',
+    '邮件识别准确率',
     '字段一次通过率',
     '字段未修改率',
     '字段无需补录率',
@@ -248,12 +275,18 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
     '跟进人'
   ]);
   details.forEach((item) => {
+    const sourceText = toText(item.source).toLowerCase();
+    const accuracy = toText(item.accuracy);
+    const fileRecognition = sourceText.includes('文件') || sourceText.includes('file') ? accuracy : '-';
+    const mailRecognition =
+      sourceText.includes('邮件') || sourceText.includes('mail') || sourceText.includes('email') ? accuracy : '-';
+
     rows.push([
       toText(item.orderId),
       toText(item.workOrderId),
       toText(item.source),
-      toText(item.accuracy),
-      toText(item.preFillRate),
+      fileRecognition,
+      mailRecognition,
       toText(item.firstPassRate),
       toInversePercentText(item.fieldModRate),
       toInversePercentText(item.fieldSuppRate),
@@ -276,10 +309,19 @@ const buildCostSheet = (params: ExportWorkbookParams) => {
   const totalOpsDays = toNumber(params.data.totalOpsDays);
   const csHours = totalCSDays * 8;
   const opsHours = totalOpsDays * 8;
+  const workOrderSubmitVolume = toNumber(metrics.work_order_submit_volume);
+  const avgProofreadingMinutes = toNumber(metrics.avg_proofreading_duration_per_work_order);
+  const avgAuditMinutes = toNumber(metrics.avg_audit_duration_per_work_order);
+  const savedProofreadingMinutesPerOrder = params.originalProofreadingMinutes - avgProofreadingMinutes;
+  const savedAuditMinutesPerOrder = params.originalAuditMinutes - avgAuditMinutes;
+  const savedFollowerCost = (savedProofreadingMinutesPerOrder * workOrderSubmitVolume * params.csRate) / 480;
+  const savedReviewerCost = (savedAuditMinutesPerOrder * workOrderSubmitVolume * params.opsRate) / 480;
+  const totalSavedCost = savedFollowerCost + savedReviewerCost;
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['组织', toText(params.org)]);
+  rows.push(['租户', toText(params.tenant)]);
+  rows.push(['部门/个人', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -291,10 +333,15 @@ const buildCostSheet = (params: ExportWorkbookParams) => {
   rows.push(['操作总成本', toMoney(metrics.total_reviewer_cost)]);
   rows.push(['平均每工作单总成本', toMoney(metrics.avg_total_cost_per_work_order)]);
   rows.push(['总人力成本', toMoney(metrics.total_labor_cost)]);
+  rows.push(['节省总成本', toMoney(totalSavedCost)]);
+  rows.push(['客服节省成本', toMoney(savedFollowerCost)]);
+  rows.push(['操作节省成本', toMoney(savedReviewerCost)]);
   rows.push(['客服投入时间', `${csHours.toFixed(1)}h（按小时/8计算：${(csHours / 8).toFixed(1)}天）`]);
   rows.push(['操作投入时间', `${opsHours.toFixed(1)}h（按小时/8计算：${(opsHours / 8).toFixed(1)}天）`]);
   rows.push(['客服成本单价', `¥${params.csRate}/人天`]);
   rows.push(['操作成本单价', `¥${params.opsRate}/人天`]);
+  rows.push(['原校对时间', `${params.originalProofreadingMinutes.toFixed(1)}min/工作单`]);
+  rows.push(['原审核时间', `${params.originalAuditMinutes.toFixed(1)}min/工作单`]);
   addBlankRow(rows);
 
   rows.push(['时间', '总人力成本(¥)', '工作单提交量', '客服投入时间(h)', '操作投入时间(h)']);
@@ -350,6 +397,7 @@ const createSheet = (rows: unknown[][], colCount: number) => {
 
 export const exportDashboardWorkbook = (params: ExportWorkbookParams) => {
   const sourceLabel = SOURCE_LABEL_MAP[params.source];
+  const tenantLabel = toText(params.tenant);
   const orgLabel = toText(params.org);
   const endDate = params.endDate || params.startDate;
   const timeLabel = params.startDate === endDate ? params.startDate : `${params.startDate}_${endDate}`;
@@ -366,7 +414,7 @@ export const exportDashboardWorkbook = (params: ExportWorkbookParams) => {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   });
 
-  const filename = `${safeNamePart(sourceLabel)}-${safeNamePart(orgLabel)}-${safeNamePart(timeLabel)}.xlsx`;
+  const filename = `${safeNamePart(timeLabel)}-${safeNamePart(tenantLabel)}-${safeNamePart(orgLabel)}-${safeNamePart(sourceLabel)}.xlsx`;
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

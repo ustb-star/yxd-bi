@@ -6,7 +6,7 @@
 
 This contains everything you need to run your app locally.
 
-Version: V1.1 (2026-03-09)
+Version: V1.2 (2026-03-09)
 
 Public URL (current): https://casio-andrews-sperm-thomas.trycloudflare.com
 

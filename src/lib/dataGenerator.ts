@@ -283,25 +283,31 @@ export const getDynamicData = (
 
   const sourceLabels = source === 'all' ? ['邮件', '文件'] : [source === 'email' ? '邮件' : '文件'];
 
-  let followerPrimaryWeight = 0.9;
-  let reviewerPrimaryWeight = 0.9;
+  let userPool = [...allUsers];
+  let auditorPool = [...allUsers];
   let specificFollower: string | null = null;
   let specificReviewer: string | null = null;
 
   if (orgScopeInfo.scope === 'dept-followers') {
-    followerPrimaryWeight = 0.95;
-    reviewerPrimaryWeight = 0.9;
+    userPool = [...roleUsers.followers];
+    auditorPool = [...allUsers];
   } else if (orgScopeInfo.scope === 'dept-reviewers') {
-    followerPrimaryWeight = 0.9;
-    reviewerPrimaryWeight = 0.95;
+    userPool = [...allUsers];
+    auditorPool = [...roleUsers.reviewers];
   } else if (orgScopeInfo.scope === 'user-followers') {
-    specificFollower = orgScopeInfo.person || null;
+    specificFollower = orgScopeInfo.person || roleUsers.followers[0] || null;
+    userPool = specificFollower ? [specificFollower] : [...roleUsers.followers];
+    auditorPool = [...allUsers];
   } else if (orgScopeInfo.scope === 'user-reviewers') {
-    specificReviewer = orgScopeInfo.person || null;
+    specificReviewer = orgScopeInfo.person || roleUsers.reviewers[0] || null;
+    userPool = [...allUsers];
+    auditorPool = specificReviewer ? [specificReviewer] : [...roleUsers.reviewers];
   } else if (orgScopeInfo.scope === 'custom') {
     const normalized = (orgScopeInfo.person || '').trim() || '管理员';
     specificFollower = normalized;
     specificReviewer = normalized;
+    userPool = [normalized];
+    auditorPool = [normalized];
   }
 
   const reasons = ['接口超时', '文件解析失败', '无效委托'];
@@ -335,13 +341,12 @@ export const getDynamicData = (
     const status: '成功' | '失败' = seededRandom(`${seed}|status`) > 0.08 ? '成功' : '失败';
     const reason = status === '失败' ? reasons[Math.floor(seededRandom(`${seed}|reason`) * reasons.length)] : '-';
 
-    const userPool =
-      seededRandom(`${seed}|user_role`) < followerPrimaryWeight ? roleUsers.followers : allUsers;
-    const auditorPool =
-      seededRandom(`${seed}|auditor_role`) < reviewerPrimaryWeight ? roleUsers.reviewers : allUsers;
+    const resolvedUserPool = userPool.length > 0 ? userPool : [...allUsers];
+    const resolvedAuditorPool = auditorPool.length > 0 ? auditorPool : [...allUsers];
 
-    const user = specificFollower || userPool[Math.floor(seededRandom(`${seed}|user`) * userPool.length)];
-    let auditor = specificReviewer || auditorPool[Math.floor(seededRandom(`${seed}|auditor`) * auditorPool.length)];
+    const user = specificFollower || resolvedUserPool[Math.floor(seededRandom(`${seed}|user`) * resolvedUserPool.length)];
+    let auditor =
+      specificReviewer || resolvedAuditorPool[Math.floor(seededRandom(`${seed}|auditor`) * resolvedAuditorPool.length)];
 
     if (!specificReviewer && auditor === user) {
       const fallbackPool = roleUsers.reviewers.filter((name) => name !== user);

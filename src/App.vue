@@ -263,6 +263,10 @@ const orgTree = computed<OrgTreeNode[]>(() => {
   return tenant?.orgTree || tenantOptions[0]?.orgTree || [{ value: '全公司', label: '全公司' }];
 });
 
+const selectedTenantName = computed(
+  () => tenantOptions.find((item) => item.id === filters.tenantId)?.name || tenantOptions[0]?.name || filters.tenantId
+);
+
 const handleTenantFilter = (query: string) => {
   tenantKeyword.value = query;
 };
@@ -527,8 +531,43 @@ const updateCurrentPageSize = (size: number) => {
 const metrics = computed(() => dashboardData.value.metrics || {});
 const toPercent = (value: number | undefined, digits = 1) => `${((value || 0) * 100).toFixed(digits)}%`;
 
-const totalSavedCost = computed(() => {
-  const m = metrics.value;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const parseDateText = (value: string) => {
+  const [year, month, day] = String(value).split('-').map(Number);
+  return new Date(year, (month || 1) - 1, day || 1);
+};
+
+const formatDateText = (value: Date) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const shiftDateText = (value: string, days: number) => {
+  const date = parseDateText(value);
+  date.setDate(date.getDate() + days);
+  return formatDateText(date);
+};
+
+const calcMom = (current: number, previous: number): { trend: TrendType; percentage: string } => {
+  const epsilon = 1e-9;
+  const delta = current - previous;
+  const trend: TrendType = delta > epsilon ? 'up' : delta < -epsilon ? 'down' : 'neutral';
+  let ratio = 0;
+  if (Math.abs(previous) <= epsilon) {
+    ratio = Math.abs(current) <= epsilon ? 0 : 1;
+  } else {
+    ratio = delta / Math.abs(previous);
+  }
+  return {
+    trend,
+    percentage: `${(Math.abs(ratio) * 100).toFixed(1)}%`
+  };
+};
+
+const calcSavedCostByMetrics = (m: Record<string, number | undefined>) => {
   const workOrderVolume = Number(m.work_order_submit_volume || 0);
   const avgProofreadingMinutes = Number(m.avg_proofreading_duration_per_work_order || 0);
   const avgAuditMinutes = Number(m.avg_audit_duration_per_work_order || 0);
@@ -540,6 +579,28 @@ const totalSavedCost = computed(() => {
   const reviewerSavedCost = (savedAuditMinutesPerOrder * workOrderVolume * opsRate.value) / 480;
 
   return followerSavedCost + reviewerSavedCost;
+};
+
+const totalSavedCost = computed(() => calcSavedCostByMetrics(metrics.value));
+
+const savedCostMom = computed(() => {
+  const start = parseDateText(startDate.value);
+  const end = parseDateText(endDate.value);
+  const periodDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1);
+  const previousStart = shiftDateText(startDate.value, -periodDays);
+  const previousEnd = shiftDateText(startDate.value, -1);
+  const previousData = getDynamicData(
+    previousStart,
+    previousEnd,
+    filters.org,
+    filters.source,
+    csRate.value,
+    opsRate.value,
+    filters.tenantId,
+    { disableComparison: true }
+  );
+  const previousSavedCost = calcSavedCostByMetrics((previousData.metrics || {}) as Record<string, number | undefined>);
+  return calcMom(totalSavedCost.value, previousSavedCost);
 });
 
 const kpis = computed(() => {
@@ -570,8 +631,8 @@ const kpis = computed(() => {
     {
       label: '节省总成本',
       value: `¥${totalSavedCost.value.toFixed(1)}`,
-      trend: trends[3]?.trend || 'neutral',
-      mom: trends[3]?.percentage || '0.0%',
+      trend: savedCostMom.value.trend,
+      mom: savedCostMom.value.percentage,
       tab: 'cost' as TabName
     }
   ];
@@ -697,43 +758,8 @@ const conversionTimelineRows = computed(() => {
   });
 });
 
-const selectedConversionPointIndex = ref(0);
-
-watch(
-  conversionTimelineRows,
-  (rows) => {
-    if (!rows.length) {
-      selectedConversionPointIndex.value = 0;
-      return;
-    }
-    if (selectedConversionPointIndex.value < 0 || selectedConversionPointIndex.value >= rows.length) {
-      selectedConversionPointIndex.value = rows.length - 1;
-    }
-  },
-  { immediate: true }
-);
-
-watch(
-  () => [startDate.value, endDate.value, filters.tenantId, filters.org, filters.source],
-  () => {
-    const rows = conversionTimelineRows.value;
-    if (rows.length > 0) {
-      selectedConversionPointIndex.value = rows.length - 1;
-    }
-  }
-);
-
-const selectedConversionPoint = computed(() => conversionTimelineRows.value[selectedConversionPointIndex.value] || null);
-const selectedConversionPointLabel = computed(() => selectedConversionPoint.value?.name || '-');
-const selectedConversionRate = computed(() => {
-  const row = selectedConversionPoint.value;
-  if (!row || row.sourceInput <= 0) return 0;
-  return row.created / row.sourceInput;
-});
-
 const conversionSnapshotRows = computed(() => {
-  const row = selectedConversionPoint.value;
-  if (!row) {
+  if (!funnelRows.value.length) {
     return [
       { name: '来源输入', total: 0, email: 0, file: 0 },
       { name: '成功创建工单', total: 0, email: 0, file: 0 },
@@ -741,12 +767,20 @@ const conversionSnapshotRows = computed(() => {
       { name: '成功提交委托', total: 0, email: 0, file: 0 }
     ];
   }
-  return [
-    { name: '来源输入', total: row.sourceInput, email: row.sourceInputEmail, file: row.sourceInputFile },
-    { name: '成功创建工单', total: row.created, email: row.createdEmail, file: row.createdFile },
-    { name: '转工作单', total: row.transferred, email: row.transferredEmail, file: row.transferredFile },
-    { name: '成功提交委托', total: row.submitted, email: row.submittedEmail, file: row.submittedFile }
-  ];
+
+  return funnelStageLabels.map((label, idx) => ({
+    name: label,
+    total: Number(funnelRows.value[idx]?.total ?? 0),
+    email: Number(funnelRows.value[idx]?.email ?? 0),
+    file: Number(funnelRows.value[idx]?.file ?? 0)
+  }));
+});
+
+const selectedConversionRate = computed(() => {
+  const sourceInput = Number(conversionSnapshotRows.value[0]?.total ?? 0);
+  const created = Number(conversionSnapshotRows.value[1]?.total ?? 0);
+  if (sourceInput <= 0) return 0;
+  return created / sourceInput;
 });
 
 const toQualityPercent = (ratio: number | undefined) => {
@@ -796,7 +830,6 @@ const costRows = computed(() =>
 
 const conversionTrendOption = computed<EChartsOption>(() => {
   const labels = conversionTimelineRows.value.map((item) => item.name);
-  const selectedLabel = labels[selectedConversionPointIndex.value];
   const shouldShowLabel = labels.length <= 8;
 
   return {
@@ -829,16 +862,7 @@ const conversionTrendOption = computed<EChartsOption>(() => {
         symbol: 'circle',
         symbolSize: 7,
         lineStyle: { width: 2 },
-        data: conversionTimelineRows.value.map((item) => item.sourceInput),
-        markLine: selectedLabel
-          ? {
-              silent: true,
-              symbol: 'none',
-              lineStyle: { color: '#4f46ff', type: 'dashed', width: 1 },
-              label: { show: false },
-              data: [{ xAxis: selectedLabel }]
-            }
-          : undefined
+        data: conversionTimelineRows.value.map((item) => item.sourceInput)
       },
       {
         name: '成功创建工单',
@@ -1249,14 +1273,6 @@ const totalFollowerCost = computed(() => (customerHours.value / 8) * csRate.valu
 const totalReviewerCost = computed(() => (opsHours.value / 8) * opsRate.value);
 const totalLaborCost = computed(() => totalFollowerCost.value + totalReviewerCost.value);
 
-const handleConversionTrendClick = (params: { dataIndex?: number }) => {
-  const index = Number(params?.dataIndex);
-  if (!Number.isInteger(index)) return;
-  const rows = conversionTimelineRows.value;
-  if (index < 0 || index >= rows.length) return;
-  selectedConversionPointIndex.value = index;
-};
-
 const handleOrgChange = (value: string[]) => {
   if (!value || value.length === 0) {
     orgPath.value = ['全公司'];
@@ -1331,11 +1347,14 @@ const handleExport = () => {
   try {
     exportDashboardWorkbook({
       source: filters.source,
+      tenant: selectedTenantName.value,
       org: filters.org,
       startDate: startDate.value,
       endDate: endDate.value,
       csRate: csRate.value,
       opsRate: opsRate.value,
+      originalProofreadingMinutes: originalProofreadingMinutes.value,
+      originalAuditMinutes: originalAuditMinutes.value,
       data: dashboardData.value
     });
   } finally {
@@ -1655,23 +1674,19 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                             <span class="chart-legend-dot legend-stage-submit"></span>成功提交委托
                           </span>
                         </div>
-                        <el-text class="panel-rate-text head-right-metric">
-                          {{ selectedConversionPointLabel }} 转化率：<span class="panel-rate-value">{{ toPercent(selectedConversionRate) }}</span>
-                        </el-text>
+                        <span class="head-right-spacer"></span>
                       </el-row>
                       <EChart
                         :option="conversionTrendOption"
                         :active="activeTab === 'conversion'"
                         :height="chartHeight(420)"
-                        @chart-click="handleConversionTrendClick"
                       />
-                      <el-text type="info" size="small" class="conversion-click-tip">点击时间点可切换右侧漏斗快照</el-text>
                     </el-card>
                   </el-col>
                   <el-col :span="6">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head conversion-head-grid">
-                        <el-text tag="b" class="head-title-left">漏斗快照（{{ selectedConversionPointLabel }}）</el-text>
+                        <el-text tag="b" class="head-title-left">转化漏斗</el-text>
                         <div class="chart-legend conversion-legend conversion-center-legend">
                           <template v-if="filters.source === 'all'">
                             <span class="chart-legend-item">
