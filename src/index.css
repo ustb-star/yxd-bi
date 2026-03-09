@@ -6,6 +6,13 @@
 
 :root {
   --brand-primary: #4f46ff;
+  --el-color-primary: #4f46ff;
+  --el-color-primary-dark-2: #3f38cc;
+  --el-color-primary-light-3: #847dff;
+  --el-color-primary-light-5: #a7a2ff;
+  --el-color-primary-light-7: #cac7ff;
+  --el-color-primary-light-8: #dbd9ff;
+  --el-color-primary-light-9: #edecff;
 }
 
 html,
@@ -22,13 +29,13 @@ body,
 }
 
 body {
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 /* Global popper theme (teleported nodes): keep selected circle color aligned with primary button */
 .el-picker__popper,
 .el-cascader__dropdown {
-  --el-color-primary: var(--brand-primary);
+  --el-color-primary: #4f46ff;
 }
 
 .el-picker__popper .el-date-table td.current:not(.disabled) .el-date-table-cell__text,
@@ -50,4 +57,18 @@ body {
 
 .el-cascader__dropdown .el-radio__input.is-checked + .el-radio__label {
   color: var(--brand-primary) !important;
+}
+
+.top-filter-popper {
+  --el-color-primary: #4f46ff !important;
+}
+
+.top-filter-popper.el-select-dropdown .el-select-dropdown__item.is-selected,
+.top-filter-popper.el-select-dropdown .el-select-dropdown__item.selected {
+  color: #4f46ff !important;
+}
+
+.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.is-selected,
+.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.selected {
+  color: #4f46ff !important;
 }

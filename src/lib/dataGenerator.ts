@@ -4,6 +4,7 @@
   MISSED_ORDER_REASONS,
   DATA_QUALITY_DATA
 } from '../constants/mockData';
+import { getTenantProfile, type TenantDepartment } from './tenantProfiles';
 
 const MINUTES_PER_WORKDAY = 8 * 60;
 
@@ -80,31 +81,40 @@ const toFiveDigitId = (seed: string, offset: number = 0) => {
   return String(10000 + normalized);
 };
 
-const containsAny = (text: string, keywords: string[]) => keywords.some((keyword) => text.includes(keyword));
+type OrgScope = 'all' | 'dept-followers' | 'dept-reviewers' | 'user-followers' | 'user-reviewers' | 'custom';
 
-const normalizePersonName = (name: string) => {
-  const n = name || '';
-  if (containsAny(n, ['张三', '寮犱笁'])) return '张三';
-  if (containsAny(n, ['李四', '鏉庡洓'])) return '李四';
-  if (containsAny(n, ['王五', '鐜嬩簲'])) return '王五';
-  if (containsAny(n, ['赵六', '璧靛叚'])) return '赵六';
-  if (containsAny(n, ['管理员', '绠＄悊鍛'])) return '管理员';
-  return n;
+const includesName = (value: string, target: string, aliases: string[] = []) => {
+  if (value === target) return true;
+  return aliases.includes(value);
 };
 
-const resolveOrgType = (org: string) => {
-  const o = org || '';
+const resolveOrgScope = (
+  org: string,
+  followerDept: TenantDepartment | undefined,
+  reviewerDept: TenantDepartment | undefined
+): { scope: OrgScope; person?: string } => {
+  const value = (org || '').trim();
+  if (!value || value === 'all' || value === '全公司') {
+    return { scope: 'all' };
+  }
 
-  if (o === 'all' || containsAny(o, ['全公司', '鍏ㄥ叕鍙'])) return 'all';
-  if (o === 'dept-1' || containsAny(o, ['出口业务部', '鍑哄彛涓氬姟閮'])) return 'dept-1';
-  if (o === 'dept-2' || containsAny(o, ['订舱操作部', '璁㈣埍鎿嶄綔閮'])) return 'dept-2';
+  if (followerDept && includesName(value, followerDept.name, followerDept.aliases || [])) {
+    return { scope: 'dept-followers' };
+  }
 
-  if (o === 'user-1' || containsAny(o, ['张三', '寮犱笁'])) return 'user-1';
-  if (o === 'user-2' || containsAny(o, ['李四', '鏉庡洓'])) return 'user-2';
-  if (o === 'user-3' || containsAny(o, ['王五', '鐜嬩簲'])) return 'user-3';
-  if (o === 'user-4' || containsAny(o, ['赵六', '璧靛叚'])) return 'user-4';
+  if (reviewerDept && includesName(value, reviewerDept.name, reviewerDept.aliases || [])) {
+    return { scope: 'dept-reviewers' };
+  }
 
-  return 'custom';
+  if (followerDept?.members.includes(value)) {
+    return { scope: 'user-followers', person: value };
+  }
+
+  if (reviewerDept?.members.includes(value)) {
+    return { scope: 'user-reviewers', person: value };
+  }
+
+  return { scope: 'custom', person: value };
 };
 
 const parseUtcDate = (dateStr: string) => {
@@ -159,6 +169,7 @@ export const getDynamicData = (
   source: string,
   csRate: number = 200,
   opsRate: number = 300,
+  tenantId: string = 'tenant-1001',
   options: GetDynamicDataOptions = {}
 ) => {
   const start = new Date(startDate);
@@ -166,18 +177,32 @@ export const getDynamicData = (
   const diffTime = Math.abs(end.getTime() - start.getTime());
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
-  const orgType = resolveOrgType(org);
+  const tenantProfile = getTenantProfile(tenantId);
+  const followerDept = tenantProfile.departments.find((item) => item.role === 'followers');
+  const reviewerDept = tenantProfile.departments.find((item) => item.role === 'reviewers');
+  const orgScopeInfo = resolveOrgScope(org, followerDept, reviewerDept);
+  const tenantVolumeFactor = Math.max(0.6, tenantProfile.volumeFactor || 1);
+  const tenantEmailBias = Math.max(-0.3, Math.min(0.3, tenantProfile.emailBias || 0));
+  const tenantAccuracyBias = Math.max(-0.08, Math.min(0.08, tenantProfile.accuracyBias || 0));
+
+  const roleUsers = {
+    followers: followerDept?.members.length ? [...followerDept.members] : ['客服A', '客服B'],
+    reviewers: reviewerDept?.members.length ? [...reviewerDept.members] : ['操作A', '操作B']
+  };
+  const allUsers = [...roleUsers.followers, ...roleUsers.reviewers];
 
   let peopleCount = 1;
-  if (orgType === 'all') {
-    peopleCount = 4;
-  } else if (orgType === 'dept-1' || orgType === 'dept-2') {
-    peopleCount = 2;
+  if (orgScopeInfo.scope === 'all') {
+    peopleCount = Math.max(1, allUsers.length);
+  } else if (orgScopeInfo.scope === 'dept-followers') {
+    peopleCount = Math.max(1, roleUsers.followers.length);
+  } else if (orgScopeInfo.scope === 'dept-reviewers') {
+    peopleCount = Math.max(1, roleUsers.reviewers.length);
   }
 
   let sourceFactor = 1;
-  if (source === 'email') sourceFactor = 0.6;
-  if (source === 'file') sourceFactor = 0.4;
+  if (source === 'email') sourceFactor = Math.max(0.2, 0.6 * (1 + tenantEmailBias));
+  if (source === 'file') sourceFactor = Math.max(0.2, 0.4 * (1 - tenantEmailBias));
   if (source === 'all') sourceFactor = 1.0;
 
   let efficiencyFactor = 1.0;
@@ -190,7 +215,7 @@ export const getDynamicData = (
   const baseVolume = 15;
   const targetWorkOrderCount = Math.max(
     1,
-    Math.round(baseVolume * peopleCount * diffDays * sourceFactor * efficiencyFactor)
+    Math.round(baseVolume * peopleCount * diffDays * sourceFactor * efficiencyFactor * tenantVolumeFactor)
   );
 
   const points: PointBucket[] = [];
@@ -258,33 +283,23 @@ export const getDynamicData = (
 
   const sourceLabels = source === 'all' ? ['邮件', '文件'] : [source === 'email' ? '邮件' : '文件'];
 
-  const roleUsers = {
-    followers: ['张三', '李四'], // 出口业务部 / 客服部 -> 跟进人
-    reviewers: ['王五', '赵六'] // 订舱操作部 / 操作部 -> 审核人
-  };
-  const allUsers = [...roleUsers.followers, ...roleUsers.reviewers];
-
   let followerPrimaryWeight = 0.9;
   let reviewerPrimaryWeight = 0.9;
   let specificFollower: string | null = null;
   let specificReviewer: string | null = null;
 
-  if (orgType === 'dept-1') {
+  if (orgScopeInfo.scope === 'dept-followers') {
     followerPrimaryWeight = 0.95;
     reviewerPrimaryWeight = 0.9;
-  } else if (orgType === 'dept-2') {
+  } else if (orgScopeInfo.scope === 'dept-reviewers') {
     followerPrimaryWeight = 0.9;
     reviewerPrimaryWeight = 0.95;
-  } else if (orgType === 'user-1') {
-    specificFollower = '张三';
-  } else if (orgType === 'user-2') {
-    specificFollower = '李四';
-  } else if (orgType === 'user-3') {
-    specificReviewer = '王五';
-  } else if (orgType === 'user-4') {
-    specificReviewer = '赵六';
-  } else if (orgType === 'custom') {
-    const normalized = normalizePersonName(org) || '管理员';
+  } else if (orgScopeInfo.scope === 'user-followers') {
+    specificFollower = orgScopeInfo.person || null;
+  } else if (orgScopeInfo.scope === 'user-reviewers') {
+    specificReviewer = orgScopeInfo.person || null;
+  } else if (orgScopeInfo.scope === 'custom') {
+    const normalized = (orgScopeInfo.person || '').trim() || '管理员';
     specificFollower = normalized;
     specificReviewer = normalized;
   }
@@ -293,6 +308,10 @@ export const getDynamicData = (
 
   let totalFieldCount = 0;
   let totalRecognizedCorrect = 0;
+  let totalFileFieldCount = 0;
+  let totalFileRecognizedCorrect = 0;
+  let totalMailFieldCount = 0;
+  let totalMailRecognizedCorrect = 0;
   let totalPrefilled = 0;
   let totalNoChange = 0;
   let totalChanged = 0;
@@ -300,7 +319,7 @@ export const getDynamicData = (
   let totalMissRecalled = 0;
 
   const workOrders: WorkOrderRecord[] = Array.from({ length: targetWorkOrderCount }).map((_, i) => {
-    const seed = `${org}|${source}|${startDate}|${endDate}|${i}`;
+    const seed = `${tenantId}|${org}|${source}|${startDate}|${endDate}|${i}`;
 
     const bucketIndex = Math.floor(seededRandom(`${seed}|bucket`) * points.length);
     const sourceLabel = sourceLabels[Math.floor(seededRandom(`${seed}|source`) * sourceLabels.length)];
@@ -339,7 +358,26 @@ export const getDynamicData = (
     const processingCostValue = proofreadingCostValue + auditCostValue;
 
     const fieldCount = 24 + Math.floor(seededRandom(`${seed}|field_count`) * 16);
-    const recognizedCorrect = Math.round(fieldCount * (0.9 + seededRandom(`${seed}|recognized`) * 0.09));
+    const mailShareBase =
+      sourceLabel === '邮件'
+        ? 0.68 + seededRandom(`${seed}|mail_share_email_source`) * 0.2
+        : sourceLabel === '文件'
+          ? 0.18 + seededRandom(`${seed}|mail_share_file_source`) * 0.2
+          : 0.45 + seededRandom(`${seed}|mail_share_mixed_source`) * 0.1;
+    const mailFieldCount = Math.max(1, Math.min(fieldCount - 1, Math.round(fieldCount * mailShareBase)));
+    const fileFieldCount = Math.max(1, fieldCount - mailFieldCount);
+
+    const fileAccuracy = Math.max(
+      0.75,
+      Math.min(0.995, 0.9 + tenantAccuracyBias + seededRandom(`${seed}|recognized_file`) * 0.09)
+    );
+    const mailAccuracy = Math.max(
+      0.75,
+      Math.min(0.995, 0.9 + tenantAccuracyBias * 0.85 + seededRandom(`${seed}|recognized_mail`) * 0.09)
+    );
+    const fileRecognizedCorrect = Math.round(fileFieldCount * fileAccuracy);
+    const mailRecognizedCorrect = Math.round(mailFieldCount * mailAccuracy);
+    const recognizedCorrect = fileRecognizedCorrect + mailRecognizedCorrect;
     const prefilled = Math.round(fieldCount * (0.72 + seededRandom(`${seed}|prefill`) * 0.24));
     const emptyInitial = Math.max(0, fieldCount - prefilled);
 
@@ -362,6 +400,10 @@ export const getDynamicData = (
 
     totalFieldCount += fieldCount;
     totalRecognizedCorrect += recognizedCorrect;
+    totalFileFieldCount += fileFieldCount;
+    totalFileRecognizedCorrect += fileRecognizedCorrect;
+    totalMailFieldCount += mailFieldCount;
+    totalMailRecognizedCorrect += mailRecognizedCorrect;
     totalPrefilled += prefilled;
     totalNoChange += noChange;
     totalChanged += changed;
@@ -492,6 +534,8 @@ export const getDynamicData = (
       : 0;
 
   const recognitionAccuracy = toPercent(totalRecognizedCorrect, totalFieldCount);
+  const fileRecognitionAccuracy = toPercent(totalFileRecognizedCorrect, totalFileFieldCount);
+  const mailRecognitionAccuracy = toPercent(totalMailRecognizedCorrect, totalMailFieldCount);
   const prefillRate = toPercent(totalPrefilled, totalFieldCount);
   const fieldFirstPassRate = toPercent(totalNoChange, totalFieldCount);
   const fieldChangeRate = toPercent(totalChanged, totalFieldCount);
@@ -499,12 +543,12 @@ export const getDynamicData = (
   const fieldMissRecallRate = toPercent(totalMissRecalled, totalFieldCount);
 
   const qualityValues = [
-    recognitionAccuracy,
-    prefillRate,
+    fileRecognitionAccuracy,
+    mailRecognitionAccuracy,
     fieldFirstPassRate,
-    fieldChangeRate,
-    fieldSupplementRate,
-    fieldMissRecallRate
+    100 - fieldChangeRate,
+    100 - fieldSupplementRate,
+    100 - fieldMissRecallRate
   ];
 
   const quality = DATA_QUALITY_DATA.map((item, idx) => ({
@@ -512,9 +556,9 @@ export const getDynamicData = (
     A: Math.max(0, Math.min(100, qualityValues[idx] ?? item.A))
   }));
 
-  const submitToTransferRate = 0.9 + seededRandom(`${org}|${source}|submit_transfer`) * 0.06;
-  const transferToCreateRate = 0.94 + seededRandom(`${org}|${source}|transfer_create`) * 0.04;
-  const sourceToCreateRate = 0.84 + seededRandom(`${org}|${source}|source_create`) * 0.1;
+  const submitToTransferRate = 0.9 + seededRandom(`${tenantId}|${org}|${source}|submit_transfer`) * 0.06;
+  const transferToCreateRate = 0.94 + seededRandom(`${tenantId}|${org}|${source}|transfer_create`) * 0.04;
+  const sourceToCreateRate = 0.84 + seededRandom(`${tenantId}|${org}|${source}|source_create`) * 0.1;
 
   const submittedCount = workOrderSubmitVolume;
   const transferredCount = Math.max(submittedCount, Math.round(submittedCount / submitToTransferRate));
@@ -522,8 +566,8 @@ export const getDynamicData = (
   const sourceInputCount = Math.max(createdCount, Math.round(createdCount / sourceToCreateRate));
   const missedCount = Math.max(0, sourceInputCount - createdCount);
 
-  const reasonWeightA = 0.4 + seededRandom(`${org}|${source}|reasonA`) * 0.15;
-  const reasonWeightB = 0.25 + seededRandom(`${org}|${source}|reasonB`) * 0.15;
+  const reasonWeightA = 0.4 + seededRandom(`${tenantId}|${org}|${source}|reasonA`) * 0.15;
+  const reasonWeightB = 0.25 + seededRandom(`${tenantId}|${org}|${source}|reasonB`) * 0.15;
 
   const reasonValueA = Math.round(missedCount * reasonWeightA);
   const reasonValueB = Math.round(missedCount * reasonWeightB);
@@ -541,9 +585,13 @@ export const getDynamicData = (
     value: funnelValues[idx] ?? item.value
   }));
 
-  const sourceSplitSeed = seededRandom(`${org}|${startDate}|${endDate}|source_split`);
+  const sourceSplitSeed = seededRandom(`${tenantId}|${org}|${startDate}|${endDate}|source_split`);
   const emailShare =
-    source === 'email' ? 1 : source === 'file' ? 0 : 0.5 + sourceSplitSeed * 0.2;
+    source === 'email'
+      ? 1
+      : source === 'file'
+        ? 0
+        : Math.max(0.2, Math.min(0.8, 0.5 + sourceSplitSeed * 0.2 + tenantEmailBias * 0.25));
 
   const emailFunnelValues = funnelValues.map((total) => Math.round(total * emailShare));
   const fileFunnelValues = funnelValues.map((total, idx) =>
@@ -560,7 +608,7 @@ export const getDynamicData = (
   const currentKpiRaw = [
     workOrderSubmitVolume,
     avgProcessingDurationPerWorkOrder,
-    recognitionAccuracy / 100,
+    fieldFirstPassRate / 100,
     totalCalculatedCost
   ];
 
@@ -576,13 +624,14 @@ export const getDynamicData = (
       source,
       csRate,
       opsRate,
+      tenantId,
       { disableComparison: true }
     );
 
     const previousKpiRaw = [
       previous.metrics.work_order_submit_volume,
       previous.metrics.avg_processing_duration_per_work_order,
-      previous.metrics.recognition_accuracy,
+      previous.metrics.field_first_pass_rate,
       previous.metrics.total_labor_cost
     ];
 
@@ -597,7 +646,7 @@ export const getDynamicData = (
     } else if (idx === 1) {
       value = round1(avgProcessingDurationPerWorkOrder).toFixed(1);
     } else if (idx === 2) {
-      value = recognitionAccuracy.toFixed(1);
+      value = fieldFirstPassRate.toFixed(1);
     } else if (idx === 3) {
       value = `¥${(totalCalculatedCost / 1000).toFixed(1)}k`;
     }
@@ -657,6 +706,8 @@ export const getDynamicData = (
       rework_rate: reworkRate,
       avg_submit_times_per_work_order: avgSubmitTimesPerWorkOrder,
       recognition_accuracy: recognitionAccuracy / 100,
+      file_recognition_accuracy: fileRecognitionAccuracy / 100,
+      mail_recognition_accuracy: mailRecognitionAccuracy / 100,
       prefill_rate: prefillRate / 100,
       field_first_pass_rate: fieldFirstPassRate / 100,
       field_change_rate: fieldChangeRate / 100,

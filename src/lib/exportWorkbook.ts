@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+﻿import * as XLSX from 'xlsx';
 
 type SourceType = 'all' | 'email' | 'file';
 
@@ -15,7 +15,14 @@ type DashboardData = {
     rejections?: number;
   }>;
   quality?: Array<{ subject?: string; A?: number }>;
-  cost?: Array<{ name?: string; tickLabel?: string; cost?: number; volume?: number; csDays?: number; opsDays?: number }>;
+  cost?: Array<{
+    name?: string;
+    tickLabel?: string;
+    cost?: number;
+    volume?: number;
+    csDays?: number;
+    opsDays?: number;
+  }>;
   tableData?: Array<Record<string, unknown>>;
   totalCSDays?: number;
   totalOpsDays?: number;
@@ -38,27 +45,11 @@ const SOURCE_LABEL_MAP: Record<SourceType, string> = {
   file: '文件接单'
 };
 
-// 兼容历史脏数据中的乱码文本，导出时统一还原到可读中文。
-const TEXT_FIX_MAP: Record<string, string> = {
-  '鍏ㄥ叕鍙?': '全公司',
-  '鍑哄彛涓氬姟閮?': '出口业务部',
-  '璁㈣埍鎿嶄綔閮?': '订舱操作部',
-  '寮犱笁': '张三',
-  '鏉庡洓': '李四',
-  '鐜嬩簲': '王五',
-  '璧靛叚': '赵六',
-  '閭欢': '邮件',
-  '鏂囦欢': '文件'
-};
-
-const toText = (value: unknown) => {
-  const text = String(value ?? '');
-  return TEXT_FIX_MAP[text] ?? text;
-};
+const toText = (value: unknown) => String(value ?? '');
 
 const toNumber = (value: unknown, fallback: number = 0) => {
-  const numberValue = Number(value);
-  return Number.isFinite(numberValue) ? numberValue : fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
 const clampRatio = (value: number) => Math.max(0, Math.min(1, value));
@@ -212,16 +203,17 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
   const endDate = params.endDate || params.startDate;
 
   const recognitionAccuracy = clampRatio(toNumber(metrics.recognition_accuracy));
-  const prefillRate = clampRatio(toNumber(metrics.prefill_rate));
+  const fileRecognitionAccuracy = clampRatio(toNumber(metrics.file_recognition_accuracy, recognitionAccuracy));
+  const mailRecognitionAccuracy = clampRatio(toNumber(metrics.mail_recognition_accuracy, recognitionAccuracy));
   const fieldFirstPassRate = clampRatio(toNumber(metrics.field_first_pass_rate));
   const fieldChangeRate = clampRatio(toNumber(metrics.field_change_rate));
   const fieldSupplementRate = clampRatio(toNumber(metrics.field_supplement_rate));
   const fieldMissRecallRate = clampRatio(toNumber(metrics.field_missrecall_rate));
 
-  // 六芒星统一按“越大越好”展示口径。
+  // 六芒星按“越大越好”口径导出。
   const dimensions: Array<[string, number]> = [
-    ['识别准确率', recognitionAccuracy],
-    ['信息预填率', prefillRate],
+    ['文件识别准确率', fileRecognitionAccuracy],
+    ['邮件识别准确率', mailRecognitionAccuracy],
     ['字段一次通过率', fieldFirstPassRate],
     ['字段未修改率', 1 - fieldChangeRate],
     ['字段无需补录率', 1 - fieldSupplementRate],
@@ -279,6 +271,7 @@ const buildCostSheet = (params: ExportWorkbookParams) => {
   const trend = params.data.cost ?? [];
   const details = params.data.tableData ?? [];
   const endDate = params.endDate || params.startDate;
+
   const totalCSDays = toNumber(params.data.totalCSDays);
   const totalOpsDays = toNumber(params.data.totalOpsDays);
   const csHours = totalCSDays * 8;
@@ -317,7 +310,19 @@ const buildCostSheet = (params: ExportWorkbookParams) => {
   addBlankRow(rows);
 
   addDetailTitle(rows);
-  rows.push(['工单ID', '工作单ID', '接单来源', '处理成本', '处理时长', '校对成本', '校对时长', '跟进人', '审核成本', '审核时长', '审核人']);
+  rows.push([
+    '工单ID',
+    '工作单ID',
+    '接单来源',
+    '处理成本',
+    '处理时长',
+    '校对成本',
+    '校对时长',
+    '跟进人',
+    '审核成本',
+    '审核时长',
+    '审核人'
+  ]);
   details.forEach((item) => {
     rows.push([
       toText(item.orderId),

@@ -1,10 +1,11 @@
 ﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { Document, Download, Filter, Search, View } from '@element-plus/icons-vue';
 import type { EChartsOption } from 'echarts';
 import * as XLSX from 'xlsx';
 import { getDynamicData } from './lib/dataGenerator';
 import { exportDashboardWorkbook } from './lib/exportWorkbook';
+import { TENANT_OPTIONS, type OrgTreeNode } from './lib/tenantProfiles';
 import EChart from './components/charts/EChart.vue';
 
 type SourceFilter = 'all' | 'email' | 'file';
@@ -77,25 +78,10 @@ const sourceOptions = [
   { label: '文件接单', value: 'file' as SourceFilter }
 ];
 
-const orgTree = [
-  { value: '全公司', label: '全公司' },
-  {
-    value: '出口业务部',
-    label: '出口业务部',
-    children: [
-      { value: '张三', label: '张三' },
-      { value: '李四', label: '李四' }
-    ]
-  },
-  {
-    value: '订舱操作部',
-    label: '订舱操作部',
-    children: [
-      { value: '王五', label: '王五' },
-      { value: '赵六', label: '赵六' }
-    ]
-  }
-];
+const tenantOptions = TENANT_OPTIONS;
+
+const tenantIdSet = new Set(tenantOptions.map((item) => item.id));
+const defaultTenantId = tenantOptions[0]?.id || 'tenant-1001';
 
 const dateShortcuts = [
   {
@@ -235,13 +221,68 @@ const fieldMockValueMap: Record<string, string> = {
 };
 
 const filters = reactive({
+  tenantId: defaultTenantId,
   org: '全公司',
   source: 'email' as SourceFilter
 });
+
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1440);
+
+const DASHBOARD_DESIGN_WIDTH = 1760;
+const PAGE_MIN_SCALE = 0.82;
+const pageScale = computed(() => {
+  const fitScale = (viewportWidth.value - 8) / DASHBOARD_DESIGN_WIDTH;
+  return Math.max(PAGE_MIN_SCALE, Math.min(1, fitScale));
+});
+
+const pageScaleStyle = computed(() => ({
+  '--page-scale': String(pageScale.value),
+  '--design-width': `${DASHBOARD_DESIGN_WIDTH}px`
+}));
+
+const chartHeight = (base: number) => `${base}px`;
+
 const sourceSwitchIndex = computed(() => {
   const index = sourceOptions.findIndex((item) => item.value === filters.source);
   return index >= 0 ? index : 0;
 });
+
+const tenantKeyword = ref('');
+const filteredTenantOptions = computed(() => {
+  const query = tenantKeyword.value.trim().toLowerCase();
+  if (!query) return tenantOptions;
+  return tenantOptions.filter((item) => {
+    const name = item.name.toLowerCase();
+    const id = item.id.toLowerCase();
+    return name.includes(query) || id.includes(query);
+  });
+});
+
+const orgTree = computed<OrgTreeNode[]>(() => {
+  const tenant = tenantOptions.find((item) => item.id === filters.tenantId);
+  return tenant?.orgTree || tenantOptions[0]?.orgTree || [{ value: '全公司', label: '全公司' }];
+});
+
+const handleTenantFilter = (query: string) => {
+  tenantKeyword.value = query;
+};
+
+const handleTenantVisibleChange = (visible: boolean) => {
+  if (!visible) {
+    tenantKeyword.value = '';
+  }
+};
+
+const isOrgPathValid = (path: string[], tree: OrgTreeNode[]) => {
+  if (!Array.isArray(path) || path.length === 0) return false;
+  let currentList = tree;
+  for (const segment of path) {
+    const current = currentList.find((node) => node.value === segment);
+    if (!current) return false;
+    currentList = current.children || [];
+  }
+  return true;
+};
 
 const orgPath = ref<string[]>(['全公司']);
 const orgProps = {
@@ -252,6 +293,8 @@ const orgProps = {
 const dateRange = ref<[string, string]>(['2025-12-02', '2026-03-02']);
 const csRate = ref(200);
 const opsRate = ref(300);
+const originalProofreadingMinutes = ref(10);
+const originalAuditMinutes = ref(5);
 const exporting = ref(false);
 const activeTab = ref<TabName>('conversion');
 const isSwitching = ref(false);
@@ -261,12 +304,14 @@ const TOP_FILTER_STORAGE_KEY = 'yxd-bi-top-filters-v1';
 
 type PersistedTopFilters = {
   dateRange?: [string, string];
+  tenantId?: string;
   orgPath?: string[];
   source?: SourceFilter;
 };
 
 const isDateText = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 const isSourceFilter = (value: unknown): value is SourceFilter => value === 'all' || value === 'email' || value === 'file';
+const isTenantId = (value: unknown): value is string => typeof value === 'string' && tenantIdSet.has(value);
 
 const restoreTopFilters = () => {
   if (typeof window === 'undefined') return;
@@ -284,13 +329,21 @@ const restoreTopFilters = () => {
       dateRange.value = [parsed.dateRange[0], parsed.dateRange[1]];
     }
 
+    if (isTenantId(parsed.tenantId)) {
+      filters.tenantId = parsed.tenantId;
+    }
+
     if (
       Array.isArray(parsed.orgPath) &&
       parsed.orgPath.length > 0 &&
-      parsed.orgPath.every((item) => typeof item === 'string' && item.trim().length > 0)
+      parsed.orgPath.every((item) => typeof item === 'string' && item.trim().length > 0) &&
+      isOrgPathValid(parsed.orgPath, orgTree.value)
     ) {
       orgPath.value = [...parsed.orgPath];
       filters.org = parsed.orgPath[parsed.orgPath.length - 1] || '全公司';
+    } else {
+      orgPath.value = ['全公司'];
+      filters.org = '全公司';
     }
 
     if (isSourceFilter(parsed.source)) {
@@ -305,6 +358,7 @@ const persistTopFilters = () => {
   if (typeof window === 'undefined') return;
   const payload: PersistedTopFilters = {
     dateRange: [dateRange.value?.[0] || '2025-12-02', dateRange.value?.[1] || '2026-03-02'],
+    tenantId: filters.tenantId,
     orgPath: orgPath.value.length ? [...orgPath.value] : ['全公司'],
     source: filters.source
   };
@@ -333,7 +387,15 @@ const startDate = computed(() => dateRange.value?.[0] || '2025-12-02');
 const endDate = computed(() => dateRange.value?.[1] || startDate.value);
 
 const dashboardData = computed(() =>
-  getDynamicData(startDate.value, endDate.value, filters.org, filters.source, csRate.value, opsRate.value)
+  getDynamicData(
+    startDate.value,
+    endDate.value,
+    filters.org,
+    filters.source,
+    csRate.value,
+    opsRate.value,
+    filters.tenantId
+  )
 );
 
 const normalizeText = (value: unknown) => {
@@ -465,6 +527,21 @@ const updateCurrentPageSize = (size: number) => {
 const metrics = computed(() => dashboardData.value.metrics || {});
 const toPercent = (value: number | undefined, digits = 1) => `${((value || 0) * 100).toFixed(digits)}%`;
 
+const totalSavedCost = computed(() => {
+  const m = metrics.value;
+  const workOrderVolume = Number(m.work_order_submit_volume || 0);
+  const avgProofreadingMinutes = Number(m.avg_proofreading_duration_per_work_order || 0);
+  const avgAuditMinutes = Number(m.avg_audit_duration_per_work_order || 0);
+
+  const savedProofreadingMinutesPerOrder = originalProofreadingMinutes.value - avgProofreadingMinutes;
+  const savedAuditMinutesPerOrder = originalAuditMinutes.value - avgAuditMinutes;
+
+  const followerSavedCost = (savedProofreadingMinutesPerOrder * workOrderVolume * csRate.value) / 480;
+  const reviewerSavedCost = (savedAuditMinutesPerOrder * workOrderVolume * opsRate.value) / 480;
+
+  return followerSavedCost + reviewerSavedCost;
+});
+
 const kpis = computed(() => {
   const m = metrics.value;
   const trends = (dashboardData.value.kpis || []) as Array<{ trend?: TrendType; percentage?: string }>;
@@ -484,15 +561,15 @@ const kpis = computed(() => {
       tab: 'efficiency' as TabName
     },
     {
-      label: '识别准确率',
-      value: toPercent(m.recognition_accuracy),
+      label: '字段一次通过率',
+      value: toPercent(m.field_first_pass_rate),
       trend: trends[2]?.trend || 'neutral',
       mom: trends[2]?.percentage || '0.0%',
       tab: 'quality' as TabName
     },
     {
-      label: '总人力成本',
-      value: `¥${Number(m.total_labor_cost || 0).toFixed(1)}`,
+      label: '节省总成本',
+      value: `¥${totalSavedCost.value.toFixed(1)}`,
       trend: trends[3]?.trend || 'neutral',
       mom: trends[3]?.percentage || '0.0%',
       tab: 'cost' as TabName
@@ -536,11 +613,6 @@ const funnelRows = computed(() => {
   });
 });
 
-const maxFunnelValue = computed(() => Math.max(...funnelRows.value.map((item) => item.total), 1));
-
-const funnelOuterWidth = (total: number) => `${Math.max(2, (total / maxFunnelValue.value) * 100).toFixed(2)}%`;
-const funnelPartWidth = (part: number, total: number) => `${total > 0 ? (part / total) * 100 : 0}%`;
-
 const missReasons = computed(() => {
   const list = (dashboardData.value.missed || []).map((item, idx) => ({
     name: missReasonLabels[idx] || normalizeText(item?.name ?? '-'),
@@ -569,6 +641,114 @@ const efficiencyRows = computed(() =>
   }))
 );
 
+const conversionTimelineRows = computed(() => {
+  const sourceInputTotal = funnelRows.value[0]?.total || 0;
+  const createdTotal = funnelRows.value[1]?.total || 0;
+  const transferredTotal = funnelRows.value[2]?.total || 0;
+  const submittedTotal = funnelRows.value[3]?.total || 0;
+
+  const transferPerSubmit = submittedTotal > 0 ? transferredTotal / submittedTotal : 1;
+  const createPerTransfer = transferredTotal > 0 ? createdTotal / transferredTotal : 1;
+  const sourcePerCreate = createdTotal > 0 ? sourceInputTotal / createdTotal : 1;
+
+  const stageEmailShare = [0, 1, 2, 3].map((idx) => {
+    const stage = funnelRows.value[idx];
+    if (!stage || stage.total <= 0) {
+      if (filters.source === 'email') return 1;
+      if (filters.source === 'file') return 0;
+      return 0.5;
+    }
+    return Math.max(0, Math.min(1, stage.email / stage.total));
+  });
+
+  return efficiencyRows.value.map((row) => {
+    const submitted = Math.max(0, Number(row.submissions || 0));
+    const transferred = Math.max(submitted, Math.round(submitted * transferPerSubmit));
+    const created = Math.max(transferred, Math.round(transferred * createPerTransfer));
+    const sourceInput = Math.max(created, Math.round(created * sourcePerCreate));
+
+    const totals = [sourceInput, created, transferred, submitted];
+    const emailValues = totals.map((total, idx) => {
+      if (filters.source === 'email') return total;
+      if (filters.source === 'file') return 0;
+      return Math.round(total * stageEmailShare[idx]);
+    });
+    const fileValues = totals.map((total, idx) => {
+      if (filters.source === 'file') return total;
+      if (filters.source === 'email') return 0;
+      return Math.max(0, total - emailValues[idx]);
+    });
+
+    return {
+      name: row.name,
+      sourceInput: totals[0],
+      created: totals[1],
+      transferred: totals[2],
+      submitted: totals[3],
+      sourceInputEmail: emailValues[0],
+      createdEmail: emailValues[1],
+      transferredEmail: emailValues[2],
+      submittedEmail: emailValues[3],
+      sourceInputFile: fileValues[0],
+      createdFile: fileValues[1],
+      transferredFile: fileValues[2],
+      submittedFile: fileValues[3]
+    };
+  });
+});
+
+const selectedConversionPointIndex = ref(0);
+
+watch(
+  conversionTimelineRows,
+  (rows) => {
+    if (!rows.length) {
+      selectedConversionPointIndex.value = 0;
+      return;
+    }
+    if (selectedConversionPointIndex.value < 0 || selectedConversionPointIndex.value >= rows.length) {
+      selectedConversionPointIndex.value = rows.length - 1;
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => [startDate.value, endDate.value, filters.tenantId, filters.org, filters.source],
+  () => {
+    const rows = conversionTimelineRows.value;
+    if (rows.length > 0) {
+      selectedConversionPointIndex.value = rows.length - 1;
+    }
+  }
+);
+
+const selectedConversionPoint = computed(() => conversionTimelineRows.value[selectedConversionPointIndex.value] || null);
+const selectedConversionPointLabel = computed(() => selectedConversionPoint.value?.name || '-');
+const selectedConversionRate = computed(() => {
+  const row = selectedConversionPoint.value;
+  if (!row || row.sourceInput <= 0) return 0;
+  return row.created / row.sourceInput;
+});
+
+const conversionSnapshotRows = computed(() => {
+  const row = selectedConversionPoint.value;
+  if (!row) {
+    return [
+      { name: '来源输入', total: 0, email: 0, file: 0 },
+      { name: '成功创建工单', total: 0, email: 0, file: 0 },
+      { name: '转工作单', total: 0, email: 0, file: 0 },
+      { name: '成功提交委托', total: 0, email: 0, file: 0 }
+    ];
+  }
+  return [
+    { name: '来源输入', total: row.sourceInput, email: row.sourceInputEmail, file: row.sourceInputFile },
+    { name: '成功创建工单', total: row.created, email: row.createdEmail, file: row.createdFile },
+    { name: '转工作单', total: row.transferred, email: row.transferredEmail, file: row.transferredFile },
+    { name: '成功提交委托', total: row.submitted, email: row.submittedEmail, file: row.submittedFile }
+  ];
+});
+
 const toQualityPercent = (ratio: number | undefined) => {
   const value = Number(ratio || 0) * 100;
   return Math.max(0, Math.min(100, value));
@@ -578,12 +758,12 @@ const qualityDimensionRows = computed(() => {
   const m = metrics.value;
   return [
     {
-      label: '识别准确率',
-      value: toQualityPercent(m.recognition_accuracy)
+      label: '文件识别准确率',
+      value: toQualityPercent(m.file_recognition_accuracy ?? m.recognition_accuracy)
     },
     {
-      label: '信息预填率',
-      value: toQualityPercent(m.prefill_rate)
+      label: '邮件识别准确率',
+      value: toQualityPercent(m.mail_recognition_accuracy ?? m.recognition_accuracy)
     },
     {
       label: '字段一次通过率',
@@ -614,17 +794,94 @@ const costRows = computed(() =>
   }))
 );
 
-const conversionFunnelOption = computed<EChartsOption>(() => {
-  const categories = funnelRows.value.map((item) => item.name);
-  const totalValues = funnelRows.value.map((item) => item.total);
-  const emailValues = funnelRows.value.map((item) => item.email);
-  const fileValues = funnelRows.value.map((item) => item.file);
+const conversionTrendOption = computed<EChartsOption>(() => {
+  const labels = conversionTimelineRows.value.map((item) => item.name);
+  const selectedLabel = labels[selectedConversionPointIndex.value];
+  const shouldShowLabel = labels.length <= 8;
+
+  return {
+    color: ['#7c83ff', '#4f7df2', '#42b8d5', '#4cbf88'],
+    grid: { left: 18, right: 16, top: 28, bottom: 36, containLabel: true },
+    legend: { show: false },
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#e5e7eb' } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: '#909399',
+        fontSize: 11,
+        interval: shouldShowLabel ? 0 : 'auto'
+      }
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: '#909399', fontSize: 11 },
+      splitLine: { lineStyle: { color: '#eef1f6' } }
+    },
+    series: [
+      {
+        name: '来源输入',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 7,
+        lineStyle: { width: 2 },
+        data: conversionTimelineRows.value.map((item) => item.sourceInput),
+        markLine: selectedLabel
+          ? {
+              silent: true,
+              symbol: 'none',
+              lineStyle: { color: '#4f46ff', type: 'dashed', width: 1 },
+              label: { show: false },
+              data: [{ xAxis: selectedLabel }]
+            }
+          : undefined
+      },
+      {
+        name: '成功创建工单',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 7,
+        lineStyle: { width: 2 },
+        data: conversionTimelineRows.value.map((item) => item.created)
+      },
+      {
+        name: '转工作单',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 7,
+        lineStyle: { width: 2 },
+        data: conversionTimelineRows.value.map((item) => item.transferred)
+      },
+      {
+        name: '成功提交委托',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 7,
+        lineStyle: { width: 2 },
+        data: conversionTimelineRows.value.map((item) => item.submitted)
+      }
+    ]
+  };
+});
+
+const conversionSnapshotOption = computed<EChartsOption>(() => {
+  const categories = conversionSnapshotRows.value.map((item) => item.name);
+  const totalValues = conversionSnapshotRows.value.map((item) => item.total);
+  const emailValues = conversionSnapshotRows.value.map((item) => item.email);
+  const fileValues = conversionSnapshotRows.value.map((item) => item.file);
   const isAll = filters.source === 'all';
   const singleColor = filters.source === 'file' ? '#f59e0b' : '#3b82f6';
 
   return {
     color: ['#3b82f6', '#f59e0b'],
-    grid: { left: 16, right: 16, top: 24, bottom: 24, containLabel: true },
+    grid: { left: 16, right: 16, top: 24, bottom: 18, containLabel: true },
     legend: { show: false },
     tooltip: {
       trigger: 'axis',
@@ -632,6 +889,8 @@ const conversionFunnelOption = computed<EChartsOption>(() => {
     },
     xAxis: {
       type: 'value',
+      axisLine: { show: false },
+      axisTick: { show: false },
       axisLabel: { color: '#909399', fontSize: 11 },
       splitLine: { lineStyle: { color: '#eef1f6' } }
     },
@@ -649,7 +908,7 @@ const conversionFunnelOption = computed<EChartsOption>(() => {
             type: 'bar',
             stack: 'source',
             data: emailValues,
-            barWidth: 30,
+            barWidth: 18,
             itemStyle: { color: '#3b82f6', borderRadius: [4, 0, 0, 4] }
           },
           {
@@ -657,7 +916,7 @@ const conversionFunnelOption = computed<EChartsOption>(() => {
             type: 'bar',
             stack: 'source',
             data: fileValues,
-            barWidth: 30,
+            barWidth: 18,
             itemStyle: { color: '#f59e0b', borderRadius: [0, 4, 4, 0] },
             label: {
               show: true,
@@ -673,7 +932,7 @@ const conversionFunnelOption = computed<EChartsOption>(() => {
             name: filters.source === 'file' ? '文件来源' : '邮件来源',
             type: 'bar',
             data: totalValues,
-            barWidth: 30,
+            barWidth: 18,
             itemStyle: { color: singleColor, borderRadius: [0, 4, 4, 0] },
             label: {
               show: true,
@@ -990,13 +1249,30 @@ const totalFollowerCost = computed(() => (customerHours.value / 8) * csRate.valu
 const totalReviewerCost = computed(() => (opsHours.value / 8) * opsRate.value);
 const totalLaborCost = computed(() => totalFollowerCost.value + totalReviewerCost.value);
 
+const handleConversionTrendClick = (params: { dataIndex?: number }) => {
+  const index = Number(params?.dataIndex);
+  if (!Number.isInteger(index)) return;
+  const rows = conversionTimelineRows.value;
+  if (index < 0 || index >= rows.length) return;
+  selectedConversionPointIndex.value = index;
+};
+
 const handleOrgChange = (value: string[]) => {
   if (!value || value.length === 0) {
     orgPath.value = ['全公司'];
+    filters.org = '全公司';
     return;
   }
   filters.org = value[value.length - 1] || '全公司';
 };
+
+watch(
+  () => filters.tenantId,
+  () => {
+    orgPath.value = ['全公司'];
+    filters.org = '全公司';
+  }
+);
 
 watch(
   orgPath,
@@ -1010,7 +1286,7 @@ watch(
   { deep: true }
 );
 
-watch([dateRange, orgPath, () => filters.source], persistTopFilters, { deep: true, immediate: true });
+watch([dateRange, () => filters.tenantId, orgPath, () => filters.source], persistTopFilters, { deep: true, immediate: true });
 
 const resetAllTablePages = () => {
   for (const tab of tabList.map((item) => item.name)) {
@@ -1019,21 +1295,31 @@ const resetAllTablePages = () => {
 };
 
 watch(
-  () => [startDate.value, endDate.value, filters.org, filters.source, csRate.value, opsRate.value],
+  () => [startDate.value, endDate.value, filters.tenantId, filters.org, filters.source, csRate.value, opsRate.value],
   () => {
     resetAllTablePages();
   }
 );
 
 watch(
-  () => [activeTab.value, startDate.value, endDate.value, filters.org, filters.source, csRate.value, opsRate.value],
+  () => [activeTab.value, startDate.value, endDate.value, filters.tenantId, filters.org, filters.source, csRate.value, opsRate.value],
   (_, oldValues) => {
     if (!oldValues) return;
     triggerSwitching();
   }
 );
 
+const handleViewportResize = () => {
+  viewportWidth.value = window.innerWidth;
+};
+
+onMounted(() => {
+  handleViewportResize();
+  window.addEventListener('resize', handleViewportResize);
+});
+
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleViewportResize);
   if (switchingTimer !== null) {
     window.clearTimeout(switchingTimer);
     switchingTimer = null;
@@ -1241,11 +1527,13 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 </script>
 
 <template>
-  <div class="page-container">
+  <div class="page-scale-shell">
+    <div class="page-scale-canvas" :style="pageScaleStyle">
+      <div class="page-container">
     <el-space direction="vertical" :size="16" fill class="page-stack">
       <el-card shadow="never" class="header-card">
         <el-row class="top-bar" justify="space-between" align="middle">
-          <el-col :xs="24" :lg="8">
+          <el-col :span="8">
             <el-space :size="12" class="brand-block">
               <div class="brand-icon-wrap">
                 <el-icon>
@@ -1258,8 +1546,8 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
               </el-space>
             </el-space>
           </el-col>
-          <el-col :xs="24" :lg="16" class="top-controls-col">
-            <el-space :size="10" class="top-controls" wrap>
+          <el-col :span="16" class="top-controls-col">
+            <el-space :size="10" class="top-controls" :wrap="false">
               <el-date-picker
                 v-model="dateRange"
                 type="daterange"
@@ -1269,7 +1557,28 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                 :shortcuts="dateShortcuts"
                 :clearable="false"
                 class="control-date-inline"
+                popper-class="top-filter-popper"
               />
+              <el-select
+                v-model="filters.tenantId"
+                filterable
+                :filter-method="handleTenantFilter"
+                :clearable="false"
+                placeholder="租户"
+                class="control-tenant-inline"
+                popper-class="tenant-select-popper"
+                @visible-change="handleTenantVisibleChange"
+              >
+                <el-option
+                  v-for="tenant in filteredTenantOptions"
+                  :key="tenant.id"
+                  :label="tenant.name"
+                  :value="tenant.id"
+                >
+                  <span class="tenant-option-name">{{ tenant.name }}</span>
+                  <el-text type="info" size="small" class="tenant-option-id">{{ tenant.id }}</el-text>
+                </el-option>
+              </el-select>
               <el-cascader
                 v-model="orgPath"
                 :options="orgTree"
@@ -1279,6 +1588,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                 clearable
                 placeholder="组织层级"
                 class="control-org-inline"
+                popper-class="top-filter-popper"
                 @change="handleOrgChange"
               />
               <div
@@ -1308,7 +1618,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
       <div class="dashboard-main">
         <div class="dashboard-content" :class="{ 'is-switching': isSwitching }">
         <el-row :gutter="16" class="kpi-row">
-        <el-col v-for="item in kpis" :key="item.label" :xs="24" :sm="12" :lg="6">
+        <el-col v-for="item in kpis" :key="item.label" :span="6">
           <el-card shadow="never" class="kpi-card" :class="{ 'is-active': activeTab === item.tab }" @click="activeTab = item.tab">
             <el-row justify="space-between" align="middle" class="kpi-head">
               <el-text class="kpi-label">{{ item.label }}</el-text>
@@ -1327,40 +1637,69 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
             <el-space direction="vertical" :size="16" fill class="module-content-stack">
               <template v-if="activeTab === 'conversion'">
                 <el-row :gutter="16">
-                  <el-col :xs="24" :xl="16">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
-                      <el-row justify="space-between" align="middle" class="panel-head">
-                        <el-text tag="b">业务转化漏斗（来源 -> 工单）</el-text>
-                        <el-space :size="12" class="conversion-head-right">
-                          <div class="chart-legend conversion-legend">
-                            <template v-if="filters.source === 'all'">
-                              <span class="chart-legend-item">
-                                <span class="chart-legend-dot legend-email"></span>邮件来源
-                              </span>
-                              <span class="chart-legend-item">
-                                <span class="chart-legend-dot legend-file"></span>文件来源
-                              </span>
-                            </template>
-                            <template v-else-if="filters.source === 'email'">
-                              <span class="chart-legend-item">
-                                <span class="chart-legend-dot legend-email"></span>邮件来源
-                              </span>
-                            </template>
-                            <template v-else>
-                              <span class="chart-legend-item">
-                                <span class="chart-legend-dot legend-file"></span>文件来源
-                              </span>
-                            </template>
-                          </div>
-                          <el-text class="panel-rate-text">
-                            转化率：<span class="panel-rate-value">{{ toPercent(metrics.source_to_ticket_conversion_rate) }}</span>
-                          </el-text>
-                        </el-space>
+                      <el-row align="middle" class="panel-head conversion-head-grid">
+                        <el-text tag="b" class="head-title-left">业务转化时序（来源 -> 工单）</el-text>
+                        <div class="chart-legend conversion-legend conversion-center-legend">
+                          <span class="chart-legend-item">
+                            <span class="chart-legend-dot legend-stage-source"></span>来源输入
+                          </span>
+                          <span class="chart-legend-item">
+                            <span class="chart-legend-dot legend-stage-create"></span>成功创建工单
+                          </span>
+                          <span class="chart-legend-item">
+                            <span class="chart-legend-dot legend-stage-transfer"></span>转工作单
+                          </span>
+                          <span class="chart-legend-item">
+                            <span class="chart-legend-dot legend-stage-submit"></span>成功提交委托
+                          </span>
+                        </div>
+                        <el-text class="panel-rate-text head-right-metric">
+                          {{ selectedConversionPointLabel }} 转化率：<span class="panel-rate-value">{{ toPercent(selectedConversionRate) }}</span>
+                        </el-text>
                       </el-row>
-                      <EChart :option="conversionFunnelOption" :active="activeTab === 'conversion'" height="420px" />
+                      <EChart
+                        :option="conversionTrendOption"
+                        :active="activeTab === 'conversion'"
+                        :height="chartHeight(420)"
+                        @chart-click="handleConversionTrendClick"
+                      />
+                      <el-text type="info" size="small" class="conversion-click-tip">点击时间点可切换右侧漏斗快照</el-text>
                     </el-card>
                   </el-col>
-                  <el-col :xs="24" :xl="8">
+                  <el-col :span="6">
+                    <el-card shadow="never" class="panel-card">
+                      <el-row align="middle" class="panel-head conversion-head-grid">
+                        <el-text tag="b" class="head-title-left">漏斗快照（{{ selectedConversionPointLabel }}）</el-text>
+                        <div class="chart-legend conversion-legend conversion-center-legend">
+                          <template v-if="filters.source === 'all'">
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-email"></span>邮件来源
+                            </span>
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-file"></span>文件来源
+                            </span>
+                          </template>
+                          <template v-else-if="filters.source === 'email'">
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-email"></span>邮件来源
+                            </span>
+                          </template>
+                          <template v-else>
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-file"></span>文件来源
+                            </span>
+                          </template>
+                        </div>
+                        <el-text class="panel-rate-text head-right-metric">
+                          转化率：<span class="panel-rate-value">{{ toPercent(selectedConversionRate) }}</span>
+                        </el-text>
+                      </el-row>
+                      <EChart :option="conversionSnapshotOption" :active="activeTab === 'conversion'" :height="chartHeight(420)" />
+                    </el-card>
+                  </el-col>
+                  <el-col :span="6">
                     <el-card shadow="never" class="panel-card">
                       <el-space direction="vertical" :size="12" fill class="miss-panel-stack">
                         <el-row justify="space-between" align="middle">
@@ -1380,7 +1719,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                           <el-text tag="b">漏单原因占比</el-text>
                         </el-row>
                         <div class="miss-chart-wrap">
-                          <EChart :option="missReasonOption" :active="activeTab === 'conversion'" height="230px" />
+                          <EChart :option="missReasonOption" :active="activeTab === 'conversion'" :height="chartHeight(230)" />
                         </div>
                         <div class="miss-legend-list">
                           <div v-for="(reason, index) in missReasons" :key="reason.name" class="miss-legend-row">
@@ -1399,7 +1738,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
               <template v-else-if="activeTab === 'efficiency'">
                 <el-row :gutter="16">
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head efficiency-head-grid">
                         <el-text tag="b" class="head-title-left">平均处理时长趋势（min）</el-text>
@@ -1416,10 +1755,10 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                         <span class="head-right-spacer"></span>
                       </el-row>
-                      <EChart :option="efficiencyLineOption" :active="activeTab === 'efficiency'" height="320px" />
+                      <EChart :option="efficiencyLineOption" :active="activeTab === 'efficiency'" :height="chartHeight(320)" />
                     </el-card>
                   </el-col>
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head efficiency-head-grid">
                         <el-text tag="b" class="head-title-left">工作单提交与驳回分布</el-text>
@@ -1433,30 +1772,28 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                         <el-text type="danger" class="kpi-inline head-right-metric">返工率 {{ toPercent(metrics.rework_rate) }}</el-text>
                       </el-row>
-                      <EChart :option="efficiencyBarOption" :active="activeTab === 'efficiency'" height="320px" />
+                      <EChart :option="efficiencyBarOption" :active="activeTab === 'efficiency'" :height="chartHeight(320)" />
                     </el-card>
                   </el-col>
                 </el-row>
               </template>
               <template v-else-if="activeTab === 'quality'">
                 <el-row :gutter="16">
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
-                      <el-row justify="space-between" align="middle" class="panel-head">
-                        <el-text tag="b">核心质量指标总览</el-text>
-                        <el-space :size="12">
-                          <div class="chart-legend">
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-radar"></span>质量得分
-                            </span>
-                          </div>
-                          <el-text class="panel-rate-text">识别准确率 <span class="panel-rate-value">{{ toPercent(metrics.recognition_accuracy) }}</span></el-text>
-                        </el-space>
+                      <el-row align="middle" class="panel-head quality-head-grid">
+                        <el-text tag="b" class="head-title-left">核心质量指标总览</el-text>
+                        <div class="chart-legend quality-center-legend">
+                          <span class="chart-legend-item">
+                            <span class="chart-legend-dot legend-radar"></span>质量得分
+                          </span>
+                        </div>
+                        <span class="head-right-spacer"></span>
                       </el-row>
-                      <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" height="320px" />
+                      <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" :height="chartHeight(320)" />
                     </el-card>
                   </el-col>
-                  <el-col :xs="24" :xl="12">
+                  <el-col :span="12">
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head panel-head-wrap">
                         <el-text tag="b">字段来源贡献度分析</el-text>
@@ -1470,7 +1807,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                           </span>
                         </div>
                       </el-row>
-                      <EChart :option="qualitySourceBarOption" :active="activeTab === 'quality'" height="260px" />
+                      <EChart :option="qualitySourceBarOption" :active="activeTab === 'quality'" :height="chartHeight(260)" />
                       <el-row :gutter="8" class="quality-inline-metrics">
                         <el-col v-for="itemRow in qualityDimensionRows.slice(0, 3)" :key="itemRow.label" :span="8">
                           <div class="quality-inline-box">
@@ -1486,7 +1823,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
               <template v-else>
                 <el-space direction="vertical" :size="16" fill class="cost-stack">
                   <el-row :gutter="16">
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-basic metric-card-split">
                         <div class="metric-split">
                           <div class="metric-main">
@@ -1500,7 +1837,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-basic metric-card-split">
                         <div class="metric-split">
                           <div class="metric-main">
@@ -1514,46 +1851,78 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-rate">
-                        <el-row justify="space-between" align="middle" class="metric-card-head">
-                          <el-text type="info" size="small">客服投入时间</el-text>
-                          <el-space :size="6" class="rate-inline">
-                            <span class="rate-label rate-label-cs">客服成本</span>
-                            <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="rate-input" />
-                            <el-text type="info" size="small">元/人天</el-text>
-                          </el-space>
-                        </el-row>
-                        <div class="metric-value-row">
-                          <span class="metric-value metric-value-compact">{{ customerHours.toFixed(1) }}</span>
-                          <span class="metric-unit">h</span>
+                        <div class="rate-card-layout">
+                          <div class="rate-card-main">
+                            <span class="rate-main-title">客服投入时间：</span>
+                            <div class="metric-value-row">
+                              <span class="metric-value metric-value-compact">{{ customerHours.toFixed(1) }}</span>
+                              <span class="metric-unit">h</span>
+                            </div>
+                          </div>
+                          <div class="rate-controls">
+                            <el-space :size="6" class="rate-inline">
+                              <span class="rate-label rate-label-cs">客服成本</span>
+                              <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="rate-input" />
+                              <el-text type="info" size="small">元/人天</el-text>
+                            </el-space>
+                            <el-space :size="6" class="rate-calculator-inline-top">
+                              <el-text type="info" size="small">原校对时间</el-text>
+                              <el-input-number
+                                v-model="originalProofreadingMinutes"
+                                :step="0.5"
+                                :min="0"
+                                :precision="1"
+                                controls-position="right"
+                                class="rate-calc-input"
+                              />
+                              <el-text type="info" size="small">min/工作单</el-text>
+                            </el-space>
+                          </div>
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :sm="12" :xl="6">
+                    <el-col :span="6">
                       <el-card shadow="never" class="metric-card metric-card-rate">
-                        <el-row justify="space-between" align="middle" class="metric-card-head">
-                          <el-text type="info" size="small">操作投入时间</el-text>
-                          <el-space :size="6" class="rate-inline">
-                            <span class="rate-label rate-label-ops">操作成本</span>
-                            <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="rate-input" />
-                            <el-text type="info" size="small">元/人天</el-text>
-                          </el-space>
-                        </el-row>
-                        <div class="metric-value-row">
-                          <span class="metric-value metric-value-compact">{{ opsHours.toFixed(1) }}</span>
-                          <span class="metric-unit">h</span>
+                        <div class="rate-card-layout">
+                          <div class="rate-card-main">
+                            <span class="rate-main-title">操作投入时间：</span>
+                            <div class="metric-value-row">
+                              <span class="metric-value metric-value-compact">{{ opsHours.toFixed(1) }}</span>
+                              <span class="metric-unit">h</span>
+                            </div>
+                          </div>
+                          <div class="rate-controls">
+                            <el-space :size="6" class="rate-inline">
+                              <span class="rate-label rate-label-ops">操作成本</span>
+                              <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="rate-input" />
+                              <el-text type="info" size="small">元/人天</el-text>
+                            </el-space>
+                            <el-space :size="6" class="rate-calculator-inline-top">
+                              <el-text type="info" size="small">原审核时间</el-text>
+                              <el-input-number
+                                v-model="originalAuditMinutes"
+                                :step="0.5"
+                                :min="0"
+                                :precision="1"
+                                controls-position="right"
+                                class="rate-calc-input"
+                              />
+                              <el-text type="info" size="small">min/工作单</el-text>
+                            </el-space>
+                          </div>
                         </div>
                       </el-card>
                     </el-col>
                   </el-row>
 
                   <el-row :gutter="16">
-                    <el-col :xs="24" :xl="16">
+                    <el-col :span="16">
                       <el-card shadow="never" class="panel-card">
-                        <el-row justify="space-between" align="middle" class="panel-head">
-                          <el-text tag="b">人力成本与单量趋势（按工作单时间聚合）</el-text>
-                          <div class="chart-legend">
+                        <el-row align="middle" class="panel-head cost-head-grid">
+                          <el-text tag="b" class="head-title-left">人力成本与单量趋势（按工作单时间聚合）</el-text>
+                          <div class="chart-legend cost-center-legend">
                             <span class="chart-legend-item">
                               <span class="chart-legend-dot legend-cost"></span>总人力成本
                             </span>
@@ -1561,11 +1930,12 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                               <span class="chart-legend-dot legend-submit"></span>工作单提交量
                             </span>
                           </div>
+                          <span class="head-right-spacer"></span>
                         </el-row>
-                        <EChart :option="costTrendOption" :active="activeTab === 'cost'" height="390px" />
+                        <EChart :option="costTrendOption" :active="activeTab === 'cost'" :height="chartHeight(390)" />
                       </el-card>
                     </el-col>
-                    <el-col :xs="24" :xl="8">
+                    <el-col :span="8">
                       <el-card shadow="never" class="panel-card">
                         <el-row justify="space-between" align="middle" class="panel-head">
                           <el-text tag="b">客服/操作投入时间趋势（h）</el-text>
@@ -1578,7 +1948,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
                             </span>
                           </div>
                         </el-row>
-                        <EChart :option="costHoursOption" :active="activeTab === 'cost'" height="390px" />
+                        <EChart :option="costHoursOption" :active="activeTab === 'cost'" :height="chartHeight(390)" />
                       </el-card>
                     </el-col>
                   </el-row>
@@ -1884,10 +2254,35 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
         <el-table-column prop="submittedValue" label="提交值" min-width="240" />
       </el-table>
     </el-dialog>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.page-scale-shell {
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.page-scale-canvas {
+  --page-scale: 1;
+  --design-width: 1760px;
+  width: var(--design-width);
+  min-width: var(--design-width);
+  margin: 0 auto;
+  zoom: var(--page-scale);
+}
+
+@supports not (zoom: 1) {
+  .page-scale-canvas {
+    transform: scale(var(--page-scale));
+    transform-origin: top center;
+  }
+}
+
 .page-container {
   min-height: 100vh;
   width: 100%;
@@ -1922,6 +2317,12 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
 .module-content {
   width: 100%;
+  min-width: 0;
+}
+
+.module-content :deep(.el-row),
+.module-content :deep(.el-col) {
+  min-width: 0;
 }
 
 .header-card,
@@ -1938,6 +2339,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 .detail-card :deep(.el-card__body),
 .panel-card :deep(.el-card__body) {
   padding: 16px;
+  min-width: 0;
 }
 
 .header-card :deep(.el-card__body) {
@@ -1995,32 +2397,61 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   width: 312px;
 }
 
+.control-tenant-inline {
+  width: 170px;
+}
+
 .control-org-inline {
   width: 160px;
 }
 
 .control-date-inline :deep(.el-input__wrapper),
+.control-tenant-inline :deep(.el-input__wrapper),
 .control-org-inline :deep(.el-input__wrapper),
 .source-switch {
   border-radius: 10px;
 }
 
 .control-date-inline :deep(.el-input__wrapper),
+.control-tenant-inline :deep(.el-input__wrapper),
 .control-org-inline :deep(.el-input__wrapper) {
-  box-shadow: 0 0 0 1px var(--card-border) inset;
+  box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
+  border-color: var(--brand-primary) !important;
   min-height: 38px;
   --el-color-primary: var(--brand-primary);
 }
 
+.control-date-inline :deep(.el-input__wrapper:hover),
+.control-tenant-inline :deep(.el-input__wrapper:hover),
+.control-org-inline :deep(.el-input__wrapper:hover),
+.control-date-inline :deep(.el-range-editor:hover),
+.control-tenant-inline :deep(.el-range-editor:hover),
+.control-org-inline :deep(.el-range-editor:hover) {
+  box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
+  border-color: var(--brand-primary) !important;
+}
+
 .control-date-inline :deep(.el-input__wrapper.is-focus),
+.control-tenant-inline :deep(.el-input__wrapper.is-focus),
 .control-org-inline :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px var(--brand-primary) inset;
+  box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
+  border-color: var(--brand-primary) !important;
 }
 
 .control-date-inline :deep(.el-input__icon),
+.control-tenant-inline :deep(.el-input__icon),
 .control-org-inline :deep(.el-input__icon),
 .control-date-inline :deep(.el-range-separator) {
   color: var(--brand-primary);
+}
+
+.tenant-option-name {
+  float: left;
+  color: var(--brand-text-normal);
+}
+
+.tenant-option-id {
+  float: right;
 }
 
 .source-switch {
@@ -2176,11 +2607,53 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   column-gap: 12px;
 }
 
+.conversion-head-grid {
+  width: 100%;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+}
+
+.quality-head-grid {
+  width: 100%;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+}
+
+.cost-head-grid {
+  width: 100%;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+}
+
 .head-title-left {
   justify-self: start;
 }
 
 .efficiency-center-legend {
+  justify-self: center;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+
+.conversion-center-legend {
+  justify-self: center;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+
+.quality-center-legend {
+  justify-self: center;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+
+.cost-center-legend {
   justify-self: center;
   flex-wrap: nowrap;
   justify-content: center;
@@ -2363,6 +2836,27 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
 .legend-file {
   background: #f59e0b;
+}
+
+.legend-stage-source {
+  background: #7c83ff;
+}
+
+.legend-stage-create {
+  background: #4f7df2;
+}
+
+.legend-stage-transfer {
+  background: #42b8d5;
+}
+
+.legend-stage-submit {
+  background: #4cbf88;
+}
+
+.conversion-click-tip {
+  margin-top: 6px;
+  display: inline-block;
 }
 
 .funnel-list {
@@ -2631,6 +3125,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
 .metric-card-rate :deep(.el-card__body) {
   align-items: stretch;
+  padding: 12px 16px;
 }
 
 .metric-card-split :deep(.el-card__body) {
@@ -2668,10 +3163,45 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   white-space: nowrap;
 }
 
+.rate-card-layout {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rate-card-main {
+  min-width: 140px;
+  flex: 0 0 140px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding-top: 2px;
+}
+
+.rate-main-title {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  color: var(--brand-text-light);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
 .metric-card-head {
   margin-bottom: 8px;
   flex-wrap: nowrap;
   gap: 8px;
+  align-items: flex-start;
 }
 
 .rate-inline {
@@ -2683,6 +3213,16 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 .rate-inline :deep(.el-space__item) {
   display: inline-flex;
   align-items: center;
+}
+
+.rate-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 4px;
+  flex-shrink: 0;
+  align-self: flex-start;
 }
 
 .rate-input {
@@ -2713,6 +3253,46 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   color: #f59e0b;
 }
 
+.rate-calculator-inline {
+  margin-top: 2px;
+  margin-bottom: 2px;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.rate-calculator-inline :deep(.el-space__item) {
+  display: inline-flex;
+  align-items: center;
+}
+
+.rate-calculator-inline-top {
+  margin-top: 0;
+  margin-bottom: 0;
+  width: auto;
+  align-items: center;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.rate-calculator-inline-top :deep(.el-space__item) {
+  display: inline-flex;
+  align-items: center;
+}
+
+.rate-calc-input {
+  width: 92px;
+}
+
+.rate-calc-input :deep(.el-input__wrapper) {
+  min-height: 24px;
+}
+
+.rate-calc-input :deep(.el-input__inner) {
+  text-align: center;
+}
+
 .metric-value {
   display: block;
   margin-top: 0;
@@ -2724,11 +3304,12 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
 
 .metric-value-row {
   width: 100%;
-  margin-top: 2px;
+  margin-top: 6px;
   display: flex;
   align-items: baseline;
   justify-content: flex-start;
   gap: 0;
+  white-space: nowrap;
 }
 
 .metric-value-compact {
@@ -3081,6 +3662,43 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   --el-color-primary: var(--brand-primary);
 }
 
+:deep(.tenant-select-popper) {
+  --el-color-primary: var(--brand-primary);
+}
+
+:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.is-selected),
+:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.selected) {
+  color: #4f46ff !important;
+}
+
+:deep(.top-filter-popper) {
+  --el-color-primary: var(--brand-primary) !important;
+}
+
+:deep(.top-filter-popper.el-select-dropdown .el-select-dropdown__item.is-selected) {
+  color: var(--brand-primary) !important;
+  font-weight: 700;
+  background-color: rgba(79, 70, 255, 0.1) !important;
+}
+
+:deep(.top-filter-popper.el-select-dropdown .el-select-dropdown__item:hover),
+:deep(.top-filter-popper.el-select-dropdown .el-select-dropdown__item.hover) {
+  background-color: rgba(79, 70, 255, 0.08) !important;
+}
+
+:deep(.top-filter-popper.el-cascader__dropdown .el-radio__inner) {
+  border-color: var(--brand-primary) !important;
+}
+
+:deep(.top-filter-popper.el-cascader__dropdown .el-radio__input.is-checked .el-radio__inner) {
+  background-color: var(--brand-primary) !important;
+  border-color: var(--brand-primary) !important;
+}
+
+:deep(.top-filter-popper.el-cascader__dropdown .el-cascader-node.is-active) {
+  background-color: rgba(79, 70, 255, 0.1) !important;
+}
+
 :deep(.el-date-picker__header-label:hover),
 :deep(.el-picker-panel__shortcut:hover),
 :deep(.el-time-panel__btn.confirm) {
@@ -3136,144 +3754,9 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
   font-weight: 600;
 }
 
-@media (max-width: 991px) {
-  .page-container {
-    padding: 12px;
-  }
-
-  .search-input {
-    width: 100%;
-  }
-
-  .chart-legend-wrap {
-    max-width: 100%;
-    justify-content: flex-start;
-  }
-
-  .top-controls-col {
-    justify-content: flex-start;
-    margin-top: 6px;
-  }
-
-  .top-controls {
-    justify-content: flex-start;
-  }
-
-  .main-title {
-    font-size: 16px;
-  }
-
-  .control-date-inline,
-  .control-org-inline {
-    width: 100%;
-  }
-
-  .source-switch {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .kpi-value {
-    font-size: 34px;
-  }
-
-  .kpi-label {
-    font-size: 16px;
-  }
-
-  .kpi-trend-tag {
-    font-size: 12px;
-    height: 28px;
-  }
-
-  .panel-rate-text {
-    font-size: 13px;
-  }
-
-  .panel-rate-value {
-    font-size: 16px;
-  }
-
-  .miss-summary-label {
-    font-size: 13px;
-  }
-
-  .miss-summary-value {
-    font-size: 34px;
-  }
-
-  .miss-legend-row {
-    font-size: 13px;
-  }
-
-  .miss-legend-ratio {
-    font-size: 15px;
-  }
-
-  .conversion-head-right {
-    flex-wrap: wrap;
-  }
-
-  .efficiency-head-grid {
-    display: flex !important;
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  .efficiency-center-legend {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .head-right-metric {
-    margin-left: auto;
-  }
-
-  .status-text {
-    font-size: 13px;
-  }
-
-  .metric-card-head {
-    flex-wrap: wrap;
-  }
-
-  .metric-card {
-    height: auto;
-    min-height: 118px;
-  }
-
-  .rate-inline {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .metric-split {
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .metric-side {
-    align-items: flex-start;
-    min-width: 0;
-  }
-
-  .rate-input {
-    width: 110px;
-  }
-
-  .metric-unit {
-    font-size: 16px;
-  }
-
-  .metric-value-row {
-    margin-top: 0;
-  }
-
-  .total-time-text,
-  .accuracy-rate-text,
-  .processing-cost-text,
-  .rework-count-text {
-    font-size: inherit;
-  }
+:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item:hover),
+:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.hover) {
+  background-color: rgba(79, 70, 255, 0.08);
 }
+
 </style>

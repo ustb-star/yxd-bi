@@ -39,6 +39,10 @@ const props = withDefaults(
   }
 );
 
+const emit = defineEmits<{
+  (e: 'chart-click', params: unknown): void;
+}>();
+
 const chartEl = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 let observer: ResizeObserver | null = null;
@@ -62,6 +66,9 @@ const render = () => {
   if (!chartEl.value) return;
   if (!chart) {
     chart = echarts.init(chartEl.value);
+    chart.on('click', (params) => {
+      emit('chart-click', params);
+    });
   }
   chart.setOption(props.option, true);
   doResize();
