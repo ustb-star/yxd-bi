@@ -87,6 +87,13 @@ const toDurationWithHours = (durationText: unknown) => {
   return `${text}(${(minutes / 60).toFixed(2)}h)`;
 };
 
+const isSuccessfulWorkOrderDetail = (item: Record<string, unknown>) => {
+  const status = toText(item.status).trim();
+  const orderId = toText(item.orderId).trim();
+  const workOrderId = toText(item.workOrderId).trim();
+  return status.includes('成功') && orderId.length > 0 && workOrderId.length > 0;
+};
+
 const safeNamePart = (value: string) => value.replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名';
 
 const addBlankRow = (rows: unknown[][]) => rows.push([]);
@@ -153,11 +160,11 @@ const buildConversionSheet = (params: ExportWorkbookParams) => {
   addBlankRow(rows);
 
   addDetailTitle(rows);
-  rows.push(['工单ID', '工作单ID', '接单来源', '状态', '漏单原因', '跟进人']);
+  rows.push(['工单ID', '邮件ID', '接单来源', '状态', '漏单原因', '跟进人']);
   details.forEach((item) => {
     rows.push([
       toText(item.orderId),
-      toText(item.workOrderId),
+      toText(item.sourceId ?? item.workOrderId),
       toText(item.source),
       toText(item.status),
       toText(item.reason),
@@ -172,7 +179,7 @@ const buildEfficiencySheet = (params: ExportWorkbookParams) => {
   const rows: unknown[][] = [];
   const metrics = params.data.metrics ?? {};
   const trend = params.data.efficiency ?? [];
-  const details = params.data.tableData ?? [];
+  const details = (params.data.tableData ?? []).filter(isSuccessfulWorkOrderDetail);
   const endDate = params.endDate || params.startDate;
 
   addSummaryTitle(rows);
@@ -225,7 +232,7 @@ const buildEfficiencySheet = (params: ExportWorkbookParams) => {
 const buildQualitySheet = (params: ExportWorkbookParams) => {
   const rows: unknown[][] = [];
   const metrics = params.data.metrics ?? {};
-  const details = params.data.tableData ?? [];
+  const details = (params.data.tableData ?? []).filter(isSuccessfulWorkOrderDetail);
   const endDate = params.endDate || params.startDate;
 
   const recognitionAccuracy = clampRatio(toNumber(metrics.recognition_accuracy));
@@ -275,11 +282,8 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
     '跟进人'
   ]);
   details.forEach((item) => {
-    const sourceText = toText(item.source).toLowerCase();
-    const accuracy = toText(item.accuracy);
-    const fileRecognition = sourceText.includes('文件') || sourceText.includes('file') ? accuracy : '-';
-    const mailRecognition =
-      sourceText.includes('邮件') || sourceText.includes('mail') || sourceText.includes('email') ? accuracy : '-';
+    const fileRecognition = toText(item.fileRecognitionAccuracy ?? item.fileRecognition ?? '-');
+    const mailRecognition = toText(item.mailRecognitionAccuracy ?? item.mailRecognition ?? '-');
 
     rows.push([
       toText(item.orderId),
@@ -302,7 +306,7 @@ const buildCostSheet = (params: ExportWorkbookParams) => {
   const rows: unknown[][] = [];
   const metrics = params.data.metrics ?? {};
   const trend = params.data.cost ?? [];
-  const details = params.data.tableData ?? [];
+  const details = (params.data.tableData ?? []).filter(isSuccessfulWorkOrderDetail);
   const endDate = params.endDate || params.startDate;
 
   const totalCSDays = toNumber(params.data.totalCSDays);

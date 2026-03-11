@@ -43,12 +43,12 @@ export const EFFICIENCY_TREND_DATA = [
 ];
 
 export const DATA_QUALITY_DATA = [
-  { subject: '识别准确率', A: 98, fullMark: 100 },
-  { subject: '信息预填率', A: 85, fullMark: 100 },
-  { subject: '一次通过率', A: 92, fullMark: 100 },
-  { subject: '字段修改率', A: 15, fullMark: 100 },
-  { subject: '字段补录率', A: 10, fullMark: 100 },
-  { subject: '误召回率', A: 2, fullMark: 100 },
+  { subject: '文件识别准确率', A: 98, fullMark: 100 },
+  { subject: '邮件识别准确率', A: 85, fullMark: 100 },
+  { subject: '字段一次通过率', A: 92, fullMark: 100 },
+  { subject: '字段未修改率', A: 85, fullMark: 100 },
+  { subject: '字段无需补录率', A: 90, fullMark: 100 },
+  { subject: '字段保留率', A: 98, fullMark: 100 },
 ];
 
 export const COST_ANALYSIS_DATA = [

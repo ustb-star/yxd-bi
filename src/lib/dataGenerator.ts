@@ -31,6 +31,7 @@ type PointBucket = {
 type WorkOrderRecord = {
   orderId: string;
   workOrderId: string;
+  sourceId: string;
   bucketIndex: number;
   source: string;
   status: '成功' | '失败';
@@ -47,8 +48,8 @@ type WorkOrderRecord = {
   proofreadingCostValue: number;
   auditCostValue: number;
   processingCostValue: number;
-  accuracy: string;
-  preFillRate: string;
+  fileRecognitionAccuracy: string;
+  mailRecognitionAccuracy: string;
   firstPassRate: string;
   fieldModRate: string;
   fieldSuppRate: string;
@@ -318,7 +319,6 @@ export const getDynamicData = (
   let totalFileRecognizedCorrect = 0;
   let totalMailFieldCount = 0;
   let totalMailRecognizedCorrect = 0;
-  let totalPrefilled = 0;
   let totalNoChange = 0;
   let totalChanged = 0;
   let totalSupplemented = 0;
@@ -383,18 +383,18 @@ export const getDynamicData = (
     const fileRecognizedCorrect = Math.round(fileFieldCount * fileAccuracy);
     const mailRecognizedCorrect = Math.round(mailFieldCount * mailAccuracy);
     const recognizedCorrect = fileRecognizedCorrect + mailRecognizedCorrect;
-    const prefilled = Math.round(fieldCount * (0.72 + seededRandom(`${seed}|prefill`) * 0.24));
-    const emptyInitial = Math.max(0, fieldCount - prefilled);
+    const initialNonEmptyCount = Math.round(fieldCount * (0.72 + seededRandom(`${seed}|initial_nonempty`) * 0.24));
+    const emptyInitial = Math.max(0, fieldCount - initialNonEmptyCount);
 
     // 非空初始值 -> [一次通过(有值A->有值A), 修改(有值A->有值B), 误召回(有值->空)]
-    let changed = Math.round(prefilled * (0.08 + seededRandom(`${seed}|changed_nonempty`) * 0.24));
-    let missRecalled = Math.round(prefilled * (0.02 + seededRandom(`${seed}|miss_recall_nonempty`) * 0.1));
-    if (changed + missRecalled > prefilled) {
-      const scale = prefilled / (changed + missRecalled);
+    let changed = Math.round(initialNonEmptyCount * (0.08 + seededRandom(`${seed}|changed_nonempty`) * 0.24));
+    let missRecalled = Math.round(initialNonEmptyCount * (0.02 + seededRandom(`${seed}|miss_recall_nonempty`) * 0.1));
+    if (changed + missRecalled > initialNonEmptyCount) {
+      const scale = initialNonEmptyCount / (changed + missRecalled);
       changed = Math.round(changed * scale);
-      missRecalled = Math.max(0, prefilled - changed);
+      missRecalled = Math.max(0, initialNonEmptyCount - changed);
     }
-    const noChangeFromPrefilled = Math.max(0, prefilled - changed - missRecalled);
+    const noChangeFromPrefilled = Math.max(0, initialNonEmptyCount - changed - missRecalled);
 
     // 空初始值 -> [补录(空->非空), 一次通过(空->空)]
     let supplemented = Math.round(emptyInitial * (0.35 + seededRandom(`${seed}|supplement_empty`) * 0.5));
@@ -409,21 +409,27 @@ export const getDynamicData = (
     totalFileRecognizedCorrect += fileRecognizedCorrect;
     totalMailFieldCount += mailFieldCount;
     totalMailRecognizedCorrect += mailRecognizedCorrect;
-    totalPrefilled += prefilled;
     totalNoChange += noChange;
     totalChanged += changed;
     totalSupplemented += supplemented;
     totalMissRecalled += missRecalled;
 
+    const sourceId = toFiveDigitId(`${seed}|sid`, i * 23 + 7);
+    const orderId = status === '失败' ? '' : toFiveDigitId(`${seed}|oid`, i * 17);
+    const workOrderId = status === '失败' ? '' : toFiveDigitId(`${seed}|woid`, i * 23 + 7);
+    const follower = status === '失败' ? '' : user;
+    const reviewer = status === '失败' ? '' : auditor;
+
     return {
-      orderId: toFiveDigitId(`${seed}|oid`, i * 17),
-      workOrderId: toFiveDigitId(`${seed}|woid`, i * 23 + 7),
+      orderId,
+      workOrderId,
+      sourceId,
       bucketIndex,
       source: sourceLabel,
       status,
       reason,
-      user,
-      auditor,
+      user: follower,
+      auditor: reviewer,
       submitTimes,
       reworkCount,
       proofreadingMinutes,
@@ -434,8 +440,8 @@ export const getDynamicData = (
       proofreadingCostValue,
       auditCostValue,
       processingCostValue,
-      accuracy: `${toPercent(recognizedCorrect, fieldCount).toFixed(1)}%`,
-      preFillRate: `${toPercent(prefilled, fieldCount).toFixed(1)}%`,
+      fileRecognitionAccuracy: `${toPercent(fileRecognizedCorrect, fileFieldCount).toFixed(1)}%`,
+      mailRecognitionAccuracy: `${toPercent(mailRecognizedCorrect, mailFieldCount).toFixed(1)}%`,
       firstPassRate: `${toPercent(noChange, fieldCount).toFixed(1)}%`,
       fieldModRate: `${toPercent(changed, fieldCount).toFixed(1)}%`,
       fieldSuppRate: `${toPercent(supplemented, fieldCount).toFixed(1)}%`,
@@ -541,7 +547,6 @@ export const getDynamicData = (
   const recognitionAccuracy = toPercent(totalRecognizedCorrect, totalFieldCount);
   const fileRecognitionAccuracy = toPercent(totalFileRecognizedCorrect, totalFileFieldCount);
   const mailRecognitionAccuracy = toPercent(totalMailRecognizedCorrect, totalMailFieldCount);
-  const prefillRate = toPercent(totalPrefilled, totalFieldCount);
   const fieldFirstPassRate = toPercent(totalNoChange, totalFieldCount);
   const fieldChangeRate = toPercent(totalChanged, totalFieldCount);
   const fieldSupplementRate = toPercent(totalSupplemented, totalFieldCount);
@@ -669,10 +674,12 @@ export const getDynamicData = (
   const tableData = workOrders.slice(0, maxDetailRows).map((order) => ({
     orderId: order.orderId,
     workOrderId: order.workOrderId,
+    sourceId: order.sourceId,
     source: order.source,
     status: order.status,
     time: order.totalTime,
-    accuracy: order.accuracy,
+    fileRecognitionAccuracy: order.fileRecognitionAccuracy,
+    mailRecognitionAccuracy: order.mailRecognitionAccuracy,
     user: order.user,
     reason: order.reason,
     proofreadingTime: order.proofreadingTime,
@@ -680,7 +687,6 @@ export const getDynamicData = (
     totalTime: order.totalTime,
     auditor: order.auditor,
     reworkCount: order.reworkCount,
-    preFillRate: order.preFillRate,
     firstPassRate: order.firstPassRate,
     fieldModRate: order.fieldModRate,
     fieldSuppRate: order.fieldSuppRate,
@@ -713,7 +719,6 @@ export const getDynamicData = (
       recognition_accuracy: recognitionAccuracy / 100,
       file_recognition_accuracy: fileRecognitionAccuracy / 100,
       mail_recognition_accuracy: mailRecognitionAccuracy / 100,
-      prefill_rate: prefillRate / 100,
       field_first_pass_rate: fieldFirstPassRate / 100,
       field_change_rate: fieldChangeRate / 100,
       field_supplement_rate: fieldSupplementRate / 100,

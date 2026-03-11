@@ -15,6 +15,7 @@ type TrendType = 'up' | 'down' | 'neutral';
 type WorkOrderRow = {
   orderId: string;
   workOrderId: string;
+  sourceId: string;
   source: string;
   sourceKey: 'email' | 'file' | 'unknown';
   status: string;
@@ -25,8 +26,8 @@ type WorkOrderRow = {
   proofreadingTime: string;
   auditTime: string;
   reworkCount: number;
-  accuracy: string;
-  preFillRate: string;
+  fileRecognitionAccuracy: string;
+  mailRecognitionAccuracy: string;
   firstPassRate: string;
   fieldModRate: string;
   fieldSuppRate: string;
@@ -437,6 +438,7 @@ const normalizeStatus = (value: unknown) => {
 const toRow = (item: Record<string, unknown>): WorkOrderRow => ({
   orderId: normalizeId(item.orderId),
   workOrderId: normalizeId(item.workOrderId),
+  sourceId: normalizeId(item.sourceId ?? item.workOrderId),
   source: normalizeSource(item.source),
   sourceKey: sourceToKey(item.source),
   status: normalizeStatus(item.status),
@@ -447,8 +449,8 @@ const toRow = (item: Record<string, unknown>): WorkOrderRow => ({
   proofreadingTime: String(item.proofreadingTime ?? '-'),
   auditTime: String(item.auditTime ?? '-'),
   reworkCount: Number(item.reworkCount ?? 0),
-  accuracy: String(item.accuracy ?? '-'),
-  preFillRate: String(item.preFillRate ?? '-'),
+  fileRecognitionAccuracy: String(item.fileRecognitionAccuracy ?? item.fileRecognition ?? '-'),
+  mailRecognitionAccuracy: String(item.mailRecognitionAccuracy ?? item.mailRecognition ?? '-'),
   firstPassRate: String(item.firstPassRate ?? '-'),
   fieldModRate: String(item.fieldModRate ?? '-'),
   fieldSuppRate: String(item.fieldSuppRate ?? '-'),
@@ -461,6 +463,13 @@ const toRow = (item: Record<string, unknown>): WorkOrderRow => ({
 const allRows = computed<WorkOrderRow[]>(() =>
   (dashboardData.value.tableData || []).map((item) => toRow(item as Record<string, unknown>))
 );
+
+const activeModuleRows = computed<WorkOrderRow[]>(() => {
+  if (activeTab.value === 'conversion') return allRows.value;
+  return allRows.value.filter(
+    (row) => row.status.includes('成功') && row.orderId !== '-' && row.workOrderId !== '-'
+  );
+});
 
 const tableStates = reactive<Record<TabName, TableState>>({
   conversion: { keyword: '', page: 1, pageSize: 20 },
@@ -483,7 +492,7 @@ for (const tab of tabList.map((item) => item.name)) {
 const normalizeSearchText = (value: string) =>
   value
     .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 65248))
-    .replace(/工单ID|工作单ID|工单|工作单|order|work|id|：|:/gi, ' ')
+    .replace(/工单ID|工作单ID|来源ID|工单|工作单|order|work|source|id|：|:/gi, ' ')
     .trim()
     .toLowerCase();
 
@@ -498,12 +507,17 @@ const currentKeyword = computed({
 
 const filteredRows = computed(() => {
   const query = normalizeSearchText(currentTableState.value.keyword);
-  if (!query) return allRows.value;
+  if (!query) return activeModuleRows.value;
   const tokens = query.split(/[\s,，;；]+/).filter(Boolean);
-  if (tokens.length === 0) return allRows.value;
+  if (tokens.length === 0) return activeModuleRows.value;
 
-  return allRows.value.filter((row) =>
-    tokens.some((token) => row.orderId.toLowerCase().includes(token) || row.workOrderId.toLowerCase().includes(token))
+  return activeModuleRows.value.filter((row) =>
+    tokens.some(
+      (token) =>
+        row.orderId.toLowerCase().includes(token) ||
+        row.workOrderId.toLowerCase().includes(token) ||
+        row.sourceId.toLowerCase().includes(token)
+    )
   );
 });
 
@@ -1366,7 +1380,7 @@ const handleExport = () => {
 
 const buildPreviewRows = (row: WorkOrderRow) => [
   ['发货人', fieldMockValueMap['发货人'] || '-', '收货人', fieldMockValueMap['收货人'] || '-'],
-  ['工单ID', row.orderId, '工作单ID', row.workOrderId],
+  ['工单ID', row.orderId || '-', '来源ID', row.sourceId],
   ['来源', row.source, '跟进人', row.user],
   ['货物类型', fieldMockValueMap['货物类型'] || '-', '英文品名', fieldMockValueMap['英文品名'] || '-'],
   ['收货地', fieldMockValueMap['收货地'] || '-', '卸货港', fieldMockValueMap['卸货港'] || '-']
@@ -1440,9 +1454,9 @@ const openPreview = (file: PreviewFile) => {
 
 const filesByRow = (row: WorkOrderRow) => {
   if (row.sourceKey === 'email') {
-    return [createPreviewFile(row, `${row.workOrderId}-邮件附件.xlsx`, '附件')];
+    return [createPreviewFile(row, `${row.sourceId}-邮件附件.xlsx`, '附件')];
   }
-  return [createPreviewFile(row, `${row.workOrderId}-来源文件.xlsx`, '文件')];
+  return [createPreviewFile(row, `${row.sourceId}-来源文件.xlsx`, '文件')];
 };
 
 const detailFiles = computed(() => (selectedBusinessRow.value ? filesByRow(selectedBusinessRow.value) : []));
@@ -1455,7 +1469,7 @@ const businessDialogTitle = computed(() => {
 const emailDetail = computed(() => {
   if (!selectedBusinessRow.value || selectedBusinessRow.value.sourceKey !== 'email') return null;
   return {
-    subject: `HPL-V2 接单测试-${selectedBusinessRow.value.workOrderId}`,
+    subject: `HPL-V2 接单测试-${selectedBusinessRow.value.sourceId}`,
     sender: '<wayne.chen@oneaix.com>',
     receiver: '<cursor_user12@1data.info>',
     cc: '<ops_team@1data.info>; <audit_team@1data.info>',
@@ -1543,6 +1557,9 @@ const detailTitleMap: Record<TabName, string> = {
 };
 
 const detailTitle = computed(() => detailTitleMap[activeTab.value]);
+const detailSearchPlaceholder = computed(() =>
+  activeTab.value === 'conversion' ? '搜索工单ID/来源ID' : '搜索工单ID/工作单ID'
+);
 </script>
 
 <template>
@@ -1979,7 +1996,7 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
             <div class="title-line"></div>
             <el-text tag="b">{{ detailTitle }}</el-text>
           </el-space>
-          <el-input v-model="currentKeyword" clearable placeholder="搜索工单ID/工作单ID" class="search-input">
+          <el-input v-model="currentKeyword" clearable :placeholder="detailSearchPlaceholder" class="search-input">
             <template #prefix>
               <el-icon>
                 <Search />
@@ -1988,15 +2005,15 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
           </el-input>
         </el-row>
 
-        <el-table :data="pagedRows" row-key="workOrderId" class="detail-table">
+        <el-table :data="pagedRows" row-key="sourceId" class="detail-table">
           <el-table-column label="工单ID" prop="orderId" min-width="110">
             <template #default="{ row }">
               <el-text class="id-text">{{ row.orderId }}</el-text>
             </template>
           </el-table-column>
-          <el-table-column label="工作单ID" prop="workOrderId" min-width="110">
+          <el-table-column :label="activeTab === 'conversion' ? '来源ID' : '工作单ID'" min-width="110">
             <template #default="{ row }">
-              <el-text class="id-text">{{ row.workOrderId }}</el-text>
+              <el-text class="id-text">{{ activeTab === 'conversion' ? row.sourceId : row.workOrderId }}</el-text>
             </template>
           </el-table-column>
           <el-table-column label="接单来源" min-width="100">
@@ -2046,12 +2063,16 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
             </el-table-column>
           </template>
           <template v-else-if="activeTab === 'quality'">
-            <el-table-column label="识别准确率" prop="accuracy" min-width="110">
+            <el-table-column label="文件识别准确率" prop="fileRecognitionAccuracy" min-width="130">
               <template #default="{ row }">
-                <el-text class="accuracy-rate-text">{{ row.accuracy }}</el-text>
+                <el-text class="accuracy-rate-text">{{ row.fileRecognitionAccuracy }}</el-text>
               </template>
             </el-table-column>
-            <el-table-column label="信息预填率" prop="preFillRate" min-width="110" />
+            <el-table-column label="邮件识别准确率" prop="mailRecognitionAccuracy" min-width="130">
+              <template #default="{ row }">
+                <el-text class="accuracy-rate-text">{{ row.mailRecognitionAccuracy }}</el-text>
+              </template>
+            </el-table-column>
             <el-table-column label="字段一次通过率" prop="firstPassRate" min-width="130" />
             <el-table-column label="字段未修改率" min-width="110">
               <template #default="{ row }">
@@ -2176,10 +2197,10 @@ const detailTitle = computed(() => detailTitleMap[activeTab.value]);
       <template v-else-if="selectedBusinessRow">
         <el-space direction="vertical" :size="12" fill class="business-detail-space">
           <el-descriptions :column="2" border>
-            <el-descriptions-item label="工单ID">{{ selectedBusinessRow.orderId }}</el-descriptions-item>
-            <el-descriptions-item label="工作单ID">{{ selectedBusinessRow.workOrderId }}</el-descriptions-item>
+            <el-descriptions-item label="工单ID">{{ selectedBusinessRow.orderId || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="来源ID">{{ selectedBusinessRow.sourceId }}</el-descriptions-item>
             <el-descriptions-item label="来源">{{ selectedBusinessRow.source }}</el-descriptions-item>
-            <el-descriptions-item label="跟进人">{{ selectedBusinessRow.user }}</el-descriptions-item>
+            <el-descriptions-item label="跟进人">{{ selectedBusinessRow.user || '-' }}</el-descriptions-item>
           </el-descriptions>
           <el-card shadow="never">
             <div class="file-list">
