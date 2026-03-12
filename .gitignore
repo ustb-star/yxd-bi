@@ -9,3 +9,6 @@ coverage/
 .share/
 .share_test.txt
 backups/
+logs/*.pid
+logs/
+yxd-bi/

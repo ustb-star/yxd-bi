@@ -9,13 +9,15 @@ import { TENANT_OPTIONS, type OrgTreeNode } from './lib/tenantProfiles';
 import EChart from './components/charts/EChart.vue';
 
 type SourceFilter = 'all' | 'email' | 'file';
-type TabName = 'conversion' | 'efficiency' | 'quality' | 'cost';
+type TabName = 'conversion' | 'quality' | 'cost';
 type TrendType = 'up' | 'down' | 'neutral';
 
 type WorkOrderRow = {
   orderId: string;
   workOrderId: string;
   sourceId: string;
+  createdAt: string;
+  endedAt: string;
   source: string;
   sourceKey: 'email' | 'file' | 'unknown';
   status: string;
@@ -66,9 +68,14 @@ type FieldDetail = {
   submittedValue: string;
 };
 
+type FieldRecognitionRow = {
+  field: string;
+  idpAccuracy: string;
+  mailAccuracy: string;
+};
+
 const tabList: Array<{ name: TabName; label: string }> = [
   { name: 'conversion', label: '转化分析' },
-  { name: 'efficiency', label: '效率分析' },
   { name: 'quality', label: '数据质量分析' },
   { name: 'cost', label: '成本分析' }
 ];
@@ -184,12 +191,23 @@ const qualityFields = [
   '审单备注'
 ];
 
-const qualitySourceContribution = [
-  { name: '托书', value: 43, color: '#6366f1' },
-  { name: '历史单', value: 23, color: '#818cf8' },
-  { name: 'BC', value: 14, color: '#a5b4fc' },
-  { name: '邮件', value: 13, color: '#60a5fa' },
-  { name: '默认值', value: 7, color: '#f59e0b' }
+const fieldRecognitionFields = [
+  '船公司',
+  '船名',
+  '航次',
+  'ETD',
+  '约号',
+  '收货地',
+  '大船起运港',
+  '卸货港',
+  '交货地',
+  '英文品名',
+  '中文品名',
+  'HSCODE',
+  '委托客户',
+  '工作单号',
+  '订舱备注',
+  '运输条款'
 ];
 
 const fieldSourceOptions: FieldDetail['source'][] = ['托书', '历史单', 'BC', '邮件', '默认值', '-'];
@@ -312,11 +330,13 @@ type PersistedTopFilters = {
   tenantId?: string;
   orgPath?: string[];
   source?: SourceFilter;
+  activeTab?: TabName;
 };
 
 const isDateText = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 const isSourceFilter = (value: unknown): value is SourceFilter => value === 'all' || value === 'email' || value === 'file';
 const isTenantId = (value: unknown): value is string => typeof value === 'string' && tenantIdSet.has(value);
+const isTabName = (value: unknown): value is TabName => value === 'conversion' || value === 'quality' || value === 'cost';
 
 const restoreTopFilters = () => {
   if (typeof window === 'undefined') return;
@@ -354,6 +374,10 @@ const restoreTopFilters = () => {
     if (isSourceFilter(parsed.source)) {
       filters.source = parsed.source;
     }
+
+    if (isTabName(parsed.activeTab)) {
+      activeTab.value = parsed.activeTab;
+    }
   } catch {
     // Ignore invalid local storage payloads.
   }
@@ -365,7 +389,8 @@ const persistTopFilters = () => {
     dateRange: [dateRange.value?.[0] || '2025-12-02', dateRange.value?.[1] || '2026-03-02'],
     tenantId: filters.tenantId,
     orgPath: orgPath.value.length ? [...orgPath.value] : ['全公司'],
-    source: filters.source
+    source: filters.source,
+    activeTab: activeTab.value
   };
   try {
     window.localStorage.setItem(TOP_FILTER_STORAGE_KEY, JSON.stringify(payload));
@@ -439,6 +464,8 @@ const toRow = (item: Record<string, unknown>): WorkOrderRow => ({
   orderId: normalizeId(item.orderId),
   workOrderId: normalizeId(item.workOrderId),
   sourceId: normalizeId(item.sourceId ?? item.workOrderId),
+  createdAt: normalizeText(item.createdAt ?? '-'),
+  endedAt: normalizeText(item.endedAt ?? '-'),
   source: normalizeSource(item.source),
   sourceKey: sourceToKey(item.source),
   status: normalizeStatus(item.status),
@@ -466,14 +493,17 @@ const allRows = computed<WorkOrderRow[]>(() =>
 
 const activeModuleRows = computed<WorkOrderRow[]>(() => {
   if (activeTab.value === 'conversion') return allRows.value;
-  return allRows.value.filter(
-    (row) => row.status.includes('成功') && row.orderId !== '-' && row.workOrderId !== '-'
-  );
+  return allRows.value
+    .filter((row) => row.status.includes('成功') && row.orderId !== '-' && row.workOrderId !== '-')
+    .sort((left, right) => {
+      const endedAtDiff = parseDateTimeText(right.endedAt) - parseDateTimeText(left.endedAt);
+      if (endedAtDiff !== 0) return endedAtDiff;
+      return parseDateTimeText(right.createdAt) - parseDateTimeText(left.createdAt);
+    });
 });
 
 const tableStates = reactive<Record<TabName, TableState>>({
   conversion: { keyword: '', page: 1, pageSize: 20 },
-  efficiency: { keyword: '', page: 1, pageSize: 20 },
   quality: { keyword: '', page: 1, pageSize: 20 },
   cost: { keyword: '', page: 1, pageSize: 20 }
 });
@@ -550,6 +580,13 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const parseDateText = (value: string) => {
   const [year, month, day] = String(value).split('-').map(Number);
   return new Date(year, (month || 1) - 1, day || 1);
+};
+
+const parseDateTimeText = (value: string) => {
+  const text = String(value || '').trim();
+  if (!text || text === '-') return 0;
+  const timestamp = Date.parse(text.replace(/\./g, '-'));
+  return Number.isFinite(timestamp) ? timestamp : 0;
 };
 
 const formatDateText = (value: Date) => {
@@ -629,13 +666,6 @@ const kpis = computed(() => {
       tab: 'conversion' as TabName
     },
     {
-      label: '平均处理时长',
-      value: `${Number(m.avg_processing_duration_per_work_order || 0).toFixed(1)}min`,
-      trend: trends[1]?.trend || 'neutral',
-      mom: trends[1]?.percentage || '0.0%',
-      tab: 'efficiency' as TabName
-    },
-    {
       label: '字段一次通过率',
       value: toPercent(m.field_first_pass_rate),
       trend: trends[2]?.trend || 'neutral',
@@ -652,12 +682,16 @@ const kpis = computed(() => {
   ];
 });
 
+const kpiColSpan = computed(() => {
+  const length = Math.max(1, kpis.value.length);
+  return Math.floor(24 / length);
+});
 const trendType = (trend: TrendType) => (trend === 'up' ? 'success' : trend === 'down' ? 'danger' : 'info');
 const trendLabel = (trend: TrendType) => (trend === 'up' ? '上升' : trend === 'down' ? '下降' : '持平');
 
 const funnelStageLabels = ['来源输入', '成功创建工单', '转工作单', '成功提交委托'];
-const missReasonLabels = ['接口超时', '无效委托', '文件解析失败'];
-const missReasonColors = ['#ef4444', '#f59e0b', '#6366f1'];
+const missReasonLabels = ['接口超时', '文件解析失败'];
+const missReasonColors = ['#ef4444', '#6366f1'];
 
 const funnelRows = computed(() => {
   const base = dashboardData.value.funnel || [];
@@ -772,30 +806,12 @@ const conversionTimelineRows = computed(() => {
   });
 });
 
-const conversionSnapshotRows = computed(() => {
-  if (!funnelRows.value.length) {
-    return [
-      { name: '来源输入', total: 0, email: 0, file: 0 },
-      { name: '成功创建工单', total: 0, email: 0, file: 0 },
-      { name: '转工作单', total: 0, email: 0, file: 0 },
-      { name: '成功提交委托', total: 0, email: 0, file: 0 }
-    ];
-  }
-
-  return funnelStageLabels.map((label, idx) => ({
+const conversionStageTotals = computed(() =>
+  funnelStageLabels.map((label, idx) => ({
     name: label,
-    total: Number(funnelRows.value[idx]?.total ?? 0),
-    email: Number(funnelRows.value[idx]?.email ?? 0),
-    file: Number(funnelRows.value[idx]?.file ?? 0)
-  }));
-});
-
-const selectedConversionRate = computed(() => {
-  const sourceInput = Number(conversionSnapshotRows.value[0]?.total ?? 0);
-  const created = Number(conversionSnapshotRows.value[1]?.total ?? 0);
-  if (sourceInput <= 0) return 0;
-  return created / sourceInput;
-});
+    total: Number(funnelRows.value[idx]?.total ?? 0)
+  }))
+);
 
 const toQualityPercent = (ratio: number | undefined) => {
   const value = Number(ratio || 0) * 100;
@@ -832,14 +848,44 @@ const qualityDimensionRows = computed(() => {
   ];
 });
 
-const costRows = computed(() =>
-  (dashboardData.value.cost || []).map((item) => ({
-    name: item.tickLabel || item.name,
-    cost: Number(item.cost || 0),
-    volume: Number(item.volume || 0),
-    csHours: Number(item.csDays || 0) * 8,
-    opsHours: Number(item.opsDays || 0) * 8
-  }))
+const clampAccuracyValue = (value: number) => Math.max(55, Math.min(99.5, value));
+
+const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
+  const idpBase = toQualityPercent(metrics.value.file_recognition_accuracy ?? metrics.value.recognition_accuracy);
+  const mailBase = toQualityPercent(metrics.value.mail_recognition_accuracy ?? metrics.value.recognition_accuracy);
+  const sceneSeed = hashInt(`${startDate.value}|${endDate.value}|${filters.tenantId}|${filters.source}|field-recognition`);
+
+  return fieldRecognitionFields.map((field, index) => {
+    const seed = sceneSeed + index * 53;
+    const difficultyOffset = (pseudoRandom(seed + 11) - 0.5) * 12;
+    const channelGap = (pseudoRandom(seed + 29) - 0.5) * 8;
+    const idpAccuracy = clampAccuracyValue(idpBase + difficultyOffset + channelGap);
+    const mailAccuracy = clampAccuracyValue(mailBase + difficultyOffset - channelGap);
+
+    return {
+      field,
+      idpAccuracy: `${idpAccuracy.toFixed(1)}%`,
+      mailAccuracy: `${mailAccuracy.toFixed(1)}%`
+    };
+  });
+});
+
+const savedCostTrendRows = computed(() =>
+  efficiencyRows.value.map((row) => {
+    const volume = Number(row.submissions || 0);
+    const savedProofreadingMinutesPerOrder = originalProofreadingMinutes.value - Number(row.proofreadingTime || 0);
+    const savedAuditMinutesPerOrder = originalAuditMinutes.value - Number(row.auditTime || 0);
+
+    const savedCost =
+      (savedProofreadingMinutesPerOrder * volume * csRate.value) / 480 +
+      (savedAuditMinutesPerOrder * volume * opsRate.value) / 480;
+
+    return {
+      name: row.name,
+      savedCost: Number(savedCost.toFixed(1)),
+      volume
+    };
+  })
 );
 
 const conversionTrendOption = computed<EChartsOption>(() => {
@@ -906,81 +952,6 @@ const conversionTrendOption = computed<EChartsOption>(() => {
         data: conversionTimelineRows.value.map((item) => item.submitted)
       }
     ]
-  };
-});
-
-const conversionSnapshotOption = computed<EChartsOption>(() => {
-  const categories = conversionSnapshotRows.value.map((item) => item.name);
-  const totalValues = conversionSnapshotRows.value.map((item) => item.total);
-  const emailValues = conversionSnapshotRows.value.map((item) => item.email);
-  const fileValues = conversionSnapshotRows.value.map((item) => item.file);
-  const isAll = filters.source === 'all';
-  const singleColor = filters.source === 'file' ? '#f59e0b' : '#3b82f6';
-
-  return {
-    color: ['#3b82f6', '#f59e0b'],
-    grid: { left: 16, right: 16, top: 24, bottom: 18, containLabel: true },
-    legend: { show: false },
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'shadow' }
-    },
-    xAxis: {
-      type: 'value',
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: '#909399', fontSize: 11 },
-      splitLine: { lineStyle: { color: '#eef1f6' } }
-    },
-    yAxis: {
-      type: 'category',
-      data: categories,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: '#606266', fontSize: 12 }
-    },
-    series: isAll
-      ? [
-          {
-            name: '邮件来源',
-            type: 'bar',
-            stack: 'source',
-            data: emailValues,
-            barWidth: 18,
-            itemStyle: { color: '#3b82f6', borderRadius: [4, 0, 0, 4] }
-          },
-          {
-            name: '文件来源',
-            type: 'bar',
-            stack: 'source',
-            data: fileValues,
-            barWidth: 18,
-            itemStyle: { color: '#f59e0b', borderRadius: [0, 4, 4, 0] },
-            label: {
-              show: true,
-              position: 'right',
-              color: '#303133',
-              fontSize: 12,
-              formatter: (params: { dataIndex: number }) => totalValues[params.dataIndex]?.toLocaleString() || '0'
-            }
-          }
-        ]
-      : [
-          {
-            name: filters.source === 'file' ? '文件来源' : '邮件来源',
-            type: 'bar',
-            data: totalValues,
-            barWidth: 18,
-            itemStyle: { color: singleColor, borderRadius: [0, 4, 4, 0] },
-            label: {
-              show: true,
-              position: 'right',
-              color: '#303133',
-              fontSize: 12,
-              formatter: (params: { dataIndex: number }) => totalValues[params.dataIndex]?.toLocaleString() || '0'
-            }
-          }
-        ]
   };
 });
 
@@ -1083,7 +1054,7 @@ const efficiencyBarOption = computed<EChartsOption>(() => ({
       itemStyle: { borderRadius: [4, 4, 0, 0] }
     },
     {
-      name: '驳回/返工',
+      name: '返工',
       type: 'bar',
       barWidth: 18,
       data: efficiencyRows.value.map((item) => item.rejections),
@@ -1102,8 +1073,8 @@ const qualityRadarOption = computed<EChartsOption>(() => {
   return {
     tooltip: { trigger: 'item' },
     radar: {
-      center: ['50%', '52%'],
-      radius: '66%',
+      center: ['50%', '55%'],
+      radius: '64%',
       splitNumber: 5,
       axisName: { color: '#606266', fontSize: 11 },
       splitLine: { lineStyle: { color: '#e5e7eb' } },
@@ -1127,43 +1098,6 @@ const qualityRadarOption = computed<EChartsOption>(() => {
   };
 });
 
-const qualitySourceBarOption = computed<EChartsOption>(() => ({
-  grid: { left: 16, right: 16, top: 18, bottom: 18, containLabel: true },
-  tooltip: {
-    trigger: 'item',
-    formatter: '{b}: {c}%'
-  },
-  xAxis: {
-    type: 'value',
-    axisLabel: { color: '#909399', fontSize: 11, formatter: '{value}%' },
-    splitLine: { lineStyle: { color: '#eef1f6' } }
-  },
-  yAxis: {
-    type: 'category',
-    data: qualitySourceContribution.map((item) => item.name),
-    axisLine: { show: false },
-    axisTick: { show: false },
-    axisLabel: { color: '#606266', fontSize: 12 }
-  },
-  series: [
-    {
-      type: 'bar',
-      barWidth: 18,
-      data: qualitySourceContribution.map((item) => ({
-        value: item.value,
-        itemStyle: { color: item.color, borderRadius: [0, 4, 4, 0] }
-      })),
-      label: {
-        show: true,
-        position: 'right',
-        formatter: '{c}%',
-        color: '#303133',
-        fontSize: 12
-      }
-    }
-  ]
-}));
-
 const costTrendOption = computed<EChartsOption>(() => ({
   color: ['#6366f1', '#10b981'],
   grid: { left: 18, right: 18, top: 36, bottom: 28, containLabel: true },
@@ -1171,7 +1105,7 @@ const costTrendOption = computed<EChartsOption>(() => ({
   tooltip: { trigger: 'axis' },
   xAxis: {
     type: 'category',
-    data: costRows.value.map((item) => item.name),
+    data: savedCostTrendRows.value.map((item) => item.name),
     axisLine: { lineStyle: { color: '#e5e7eb' } },
     axisTick: { show: false },
     axisLabel: { color: '#909399', fontSize: 11 }
@@ -1194,11 +1128,11 @@ const costTrendOption = computed<EChartsOption>(() => ({
   ],
   series: [
     {
-      name: '总人力成本',
+      name: '节省成本',
       type: 'line',
       smooth: true,
       yAxisIndex: 0,
-      data: costRows.value.map((item) => Number(item.cost.toFixed(1))),
+      data: savedCostTrendRows.value.map((item) => item.savedCost),
       areaStyle: { color: 'rgba(99, 102, 241, 0.16)' },
       lineStyle: { width: 2 }
     },
@@ -1207,47 +1141,9 @@ const costTrendOption = computed<EChartsOption>(() => ({
       type: 'line',
       smooth: true,
       yAxisIndex: 1,
-      data: costRows.value.map((item) => item.volume),
+      data: savedCostTrendRows.value.map((item) => item.volume),
       areaStyle: { color: 'rgba(16, 185, 129, 0.12)' },
       lineStyle: { width: 2 }
-    }
-  ]
-}));
-
-const costHoursOption = computed<EChartsOption>(() => ({
-  color: ['#0ea5e9', '#f59e0b'],
-  grid: { left: 14, right: 14, top: 28, bottom: 24, containLabel: true },
-  legend: { show: false },
-  tooltip: {
-    trigger: 'axis',
-    axisPointer: { type: 'shadow' }
-  },
-  xAxis: {
-    type: 'category',
-    data: costRows.value.map((item) => item.name),
-    axisLine: { lineStyle: { color: '#e5e7eb' } },
-    axisTick: { show: false },
-    axisLabel: { color: '#909399', fontSize: 11 }
-  },
-  yAxis: {
-    type: 'value',
-    axisLabel: { color: '#909399', fontSize: 11, formatter: '{value}h' },
-    splitLine: { lineStyle: { color: '#eef1f6' } }
-  },
-  series: [
-    {
-      name: '客服投入时间',
-      type: 'bar',
-      barWidth: 16,
-      data: costRows.value.map((item) => Number(item.csHours.toFixed(1))),
-      itemStyle: { borderRadius: [4, 4, 0, 0] }
-    },
-    {
-      name: '操作投入时间',
-      type: 'bar',
-      barWidth: 16,
-      data: costRows.value.map((item) => Number(item.opsHours.toFixed(1))),
-      itemStyle: { borderRadius: [4, 4, 0, 0] }
     }
   ]
 }));
@@ -1258,6 +1154,14 @@ const parseMinutes = (durationText: string) => {
 };
 
 const durationToHours = (durationText: string) => `${(parseMinutes(durationText) / 60).toFixed(2)}h`;
+
+const formatSavedCostPerRow = (row: WorkOrderRow) => {
+  const proofreadingMinutes = parseMinutes(row.proofreadingTime);
+  const auditMinutes = parseMinutes(row.auditTime);
+  const savedProofreadingCost = ((originalProofreadingMinutes.value - proofreadingMinutes) * csRate.value) / 480;
+  const savedAuditCost = ((originalAuditMinutes.value - auditMinutes) * opsRate.value) / 480;
+  return `¥${(savedProofreadingCost + savedAuditCost).toFixed(1)}`;
+};
 
 const parsePercentRatio = (value: string) => {
   const match = String(value ?? '').match(/-?\d+(?:\.\d+)?/);
@@ -1276,6 +1180,10 @@ const toInversePercent = (value: string) => {
 
 const customerHours = computed(() => Number(dashboardData.value.totalCSDays || 0) * 8);
 const opsHours = computed(() => Number(dashboardData.value.totalOpsDays || 0) * 8);
+
+const avgProcessingMinutes = computed(() => Number(metrics.value.avg_processing_duration_per_work_order || 0));
+const avgProofreadingMinutes = computed(() => Number(metrics.value.avg_proofreading_duration_per_work_order || 0));
+const avgAuditMinutes = computed(() => Number(metrics.value.avg_audit_duration_per_work_order || 0));
 
 const avgFollowerCostPerWorkOrder = computed(() => Number(metrics.value.avg_follower_cost_per_work_order || 0));
 const avgReviewerCostPerWorkOrder = computed(() => Number(metrics.value.avg_reviewer_cost_per_work_order || 0));
@@ -1316,7 +1224,10 @@ watch(
   { deep: true }
 );
 
-watch([dateRange, () => filters.tenantId, orgPath, () => filters.source], persistTopFilters, { deep: true, immediate: true });
+watch([dateRange, () => filters.tenantId, orgPath, () => filters.source, () => activeTab.value], persistTopFilters, {
+  deep: true,
+  immediate: true
+});
 
 const resetAllTablePages = () => {
   for (const tab of tabList.map((item) => item.name)) {
@@ -1356,23 +1267,24 @@ onBeforeUnmount(() => {
   }
 });
 
-const handleExport = () => {
+const handleExport = async () => {
   exporting.value = true;
   try {
-    exportDashboardWorkbook({
+    await exportDashboardWorkbook({
       source: filters.source,
       tenant: selectedTenantName.value,
       org: filters.org,
       startDate: startDate.value,
       endDate: endDate.value,
-      csRate: csRate.value,
-      opsRate: opsRate.value,
-      originalProofreadingMinutes: originalProofreadingMinutes.value,
-      originalAuditMinutes: originalAuditMinutes.value,
-      data: dashboardData.value
+        csRate: csRate.value,
+        opsRate: opsRate.value,
+        originalProofreadingMinutes: originalProofreadingMinutes.value,
+        originalAuditMinutes: originalAuditMinutes.value,
+      data: dashboardData.value,
+      fieldRecognitionRows: fieldRecognitionRows.value
     });
   } finally {
-    setTimeout(() => {
+    window.setTimeout(() => {
       exporting.value = false;
     }, 0);
   }
@@ -1551,9 +1463,8 @@ const qualitySourceTagStyle = (source: FieldDetail['source']) => {
 
 const detailTitleMap: Record<TabName, string> = {
   conversion: '业务明细表',
-  efficiency: '效率明细表',
   quality: '质量明细表',
-  cost: '成本明细表'
+  cost: '效率成本表'
 };
 
 const detailTitle = computed(() => detailTitleMap[activeTab.value]);
@@ -1654,7 +1565,7 @@ const detailSearchPlaceholder = computed(() =>
       <div class="dashboard-main">
         <div class="dashboard-content" :class="{ 'is-switching': isSwitching }">
         <el-row :gutter="16" class="kpi-row">
-        <el-col v-for="item in kpis" :key="item.label" :span="6">
+        <el-col v-for="item in kpis" :key="item.label" :span="kpiColSpan">
           <el-card shadow="never" class="kpi-card" :class="{ 'is-active': activeTab === item.tab }" @click="activeTab = item.tab">
             <el-row justify="space-between" align="middle" class="kpi-head">
               <el-text class="kpi-label">{{ item.label }}</el-text>
@@ -1671,12 +1582,13 @@ const detailSearchPlaceholder = computed(() =>
         <el-card shadow="never" class="content-card">
           <div class="module-content">
             <el-space direction="vertical" :size="16" fill class="module-content-stack">
+              
               <template v-if="activeTab === 'conversion'">
                 <el-row :gutter="16">
-                  <el-col :span="12">
+                  <el-col :span="16">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head conversion-head-grid">
-                        <el-text tag="b" class="head-title-left">业务转化时序（来源 -> 工单）</el-text>
+                        <el-text tag="b" class="head-title-left">业务单量</el-text>
                         <div class="chart-legend conversion-legend conversion-center-legend">
                           <span class="chart-legend-item">
                             <span class="chart-legend-dot legend-stage-source"></span>来源输入
@@ -1698,40 +1610,15 @@ const detailSearchPlaceholder = computed(() =>
                         :active="activeTab === 'conversion'"
                         :height="chartHeight(420)"
                       />
-                    </el-card>
-                  </el-col>
-                  <el-col :span="6">
-                    <el-card shadow="never" class="panel-card">
-                      <el-row align="middle" class="panel-head conversion-head-grid">
-                        <el-text tag="b" class="head-title-left">转化漏斗</el-text>
-                        <div class="chart-legend conversion-legend conversion-center-legend">
-                          <template v-if="filters.source === 'all'">
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-email"></span>邮件来源
-                            </span>
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-file"></span>文件来源
-                            </span>
-                          </template>
-                          <template v-else-if="filters.source === 'email'">
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-email"></span>邮件来源
-                            </span>
-                          </template>
-                          <template v-else>
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-file"></span>文件来源
-                            </span>
-                          </template>
+                      <div class="conversion-stage-summary">
+                        <div v-for="item in conversionStageTotals" :key="`sum-${item.name}`" class="conversion-stage-item">
+                          <el-text type="info" size="small">{{ item.name }}</el-text>
+                          <el-text tag="b" class="conversion-stage-value">{{ item.total.toLocaleString() }}</el-text>
                         </div>
-                        <el-text class="panel-rate-text head-right-metric">
-                          转化率：<span class="panel-rate-value">{{ toPercent(selectedConversionRate) }}</span>
-                        </el-text>
-                      </el-row>
-                      <EChart :option="conversionSnapshotOption" :active="activeTab === 'conversion'" :height="chartHeight(420)" />
+                      </div>
                     </el-card>
                   </el-col>
-                  <el-col :span="6">
+                  <el-col :span="8">
                     <el-card shadow="never" class="panel-card">
                       <el-space direction="vertical" :size="12" fill class="miss-panel-stack">
                         <el-row justify="space-between" align="middle">
@@ -1768,53 +1655,12 @@ const detailSearchPlaceholder = computed(() =>
                 </el-row>
               </template>
 
-              <template v-else-if="activeTab === 'efficiency'">
-                <el-row :gutter="16">
-                  <el-col :span="12">
-                    <el-card shadow="never" class="panel-card">
-                      <el-row align="middle" class="panel-head efficiency-head-grid">
-                        <el-text tag="b" class="head-title-left">平均处理时长趋势（min）</el-text>
-                        <div class="chart-legend efficiency-center-legend">
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-total"></span>处理总时长
-                            </span>
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-proof"></span>校对时长
-                            </span>
-                            <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-audit"></span>审核时长
-                            </span>
-                        </div>
-                        <span class="head-right-spacer"></span>
-                      </el-row>
-                      <EChart :option="efficiencyLineOption" :active="activeTab === 'efficiency'" :height="chartHeight(320)" />
-                    </el-card>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-card shadow="never" class="panel-card">
-                      <el-row align="middle" class="panel-head efficiency-head-grid">
-                        <el-text tag="b" class="head-title-left">工作单提交与驳回分布</el-text>
-                        <div class="chart-legend efficiency-center-legend">
-                          <span class="chart-legend-item">
-                            <span class="chart-legend-dot legend-submit"></span>提交成功
-                          </span>
-                          <span class="chart-legend-item">
-                            <span class="chart-legend-dot legend-reject"></span>驳回/返工
-                          </span>
-                        </div>
-                        <el-text type="danger" class="kpi-inline head-right-metric">返工率 {{ toPercent(metrics.rework_rate) }}</el-text>
-                      </el-row>
-                      <EChart :option="efficiencyBarOption" :active="activeTab === 'efficiency'" :height="chartHeight(320)" />
-                    </el-card>
-                  </el-col>
-                </el-row>
-              </template>
               <template v-else-if="activeTab === 'quality'">
                 <el-row :gutter="16">
-                  <el-col :span="12">
+                  <el-col :span="8">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head quality-head-grid">
-                        <el-text tag="b" class="head-title-left">核心质量指标总览</el-text>
+                        <el-text tag="b" class="head-title-left">核心质量指标（工作单维度）</el-text>
                         <div class="chart-legend quality-center-legend">
                           <span class="chart-legend-item">
                             <span class="chart-legend-dot legend-radar"></span>质量得分
@@ -1822,32 +1668,28 @@ const detailSearchPlaceholder = computed(() =>
                         </div>
                         <span class="head-right-spacer"></span>
                       </el-row>
-                      <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" :height="chartHeight(320)" />
+                      <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" :height="chartHeight(360)" />
                     </el-card>
                   </el-col>
-                  <el-col :span="12">
+                  <el-col :span="16">
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head panel-head-wrap">
-                        <el-text tag="b">字段来源贡献度分析</el-text>
-                        <div class="chart-legend chart-legend-wrap">
-                          <span
-                            v-for="source in qualitySourceContribution"
-                            :key="`legend-${source.name}`"
-                            class="chart-legend-item"
-                          >
-                            <span class="chart-legend-dot" :style="{ backgroundColor: source.color }"></span>{{ source.name }}
-                          </span>
-                        </div>
+                        <el-text tag="b">字段识别准确率（字段维度）</el-text>
+                        <el-text type="info" size="small">IDP / MAIL</el-text>
                       </el-row>
-                      <EChart :option="qualitySourceBarOption" :active="activeTab === 'quality'" :height="chartHeight(260)" />
-                      <el-row :gutter="8" class="quality-inline-metrics">
-                        <el-col v-for="itemRow in qualityDimensionRows.slice(0, 3)" :key="itemRow.label" :span="8">
-                          <div class="quality-inline-box">
-                            <el-text type="info" size="small">{{ itemRow.label }}</el-text>
-                            <el-text tag="b">{{ itemRow.value.toFixed(1) }}%</el-text>
-                          </div>
-                        </el-col>
-                      </el-row>
+                      <el-table :data="fieldRecognitionRows" class="field-accuracy-table" height="360">
+                        <el-table-column prop="field" label="字段名称" min-width="180" />
+                        <el-table-column prop="idpAccuracy" label="IDP" min-width="120" align="center">
+                          <template #default="{ row }">
+                            <el-text class="field-accuracy-idp">{{ row.idpAccuracy }}</el-text>
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="mailAccuracy" label="MAIL" min-width="120" align="center">
+                          <template #default="{ row }">
+                            <el-text class="field-accuracy-mail">{{ row.mailAccuracy }}</el-text>
+                          </template>
+                        </el-table-column>
+                      </el-table>
                     </el-card>
                   </el-col>
                 </el-row>
@@ -1855,11 +1697,11 @@ const detailSearchPlaceholder = computed(() =>
               <template v-else>
                 <el-space direction="vertical" :size="16" fill class="cost-stack">
                   <el-row :gutter="16">
-                    <el-col :span="6">
+                    <el-col :span="8">
                       <el-card shadow="never" class="metric-card metric-card-basic metric-card-split">
                         <div class="metric-split">
                           <div class="metric-main">
-                            <el-text type="info" size="small">平均每工作单总成本</el-text>
+                            <el-text type="info" size="small">平均每工作单成本</el-text>
                             <el-text tag="b" class="metric-value">¥{{ avgTotalCostPerWorkOrder.toFixed(1) }}</el-text>
                           </div>
                           <div class="metric-side">
@@ -1869,38 +1711,18 @@ const detailSearchPlaceholder = computed(() =>
                         </div>
                       </el-card>
                     </el-col>
-                    <el-col :span="6">
+                    <el-col :span="8">
                       <el-card shadow="never" class="metric-card metric-card-basic metric-card-split">
                         <div class="metric-split">
-                          <div class="metric-main">
-                            <el-text type="info" size="small">总人力成本</el-text>
-                            <el-text tag="b" class="metric-value">¥{{ totalLaborCost.toFixed(1) }}</el-text>
+                          <div class="metric-main processing-metric-main">
+                            <el-text type="info" size="small">平均处理时长</el-text>
+                            <el-text tag="b" class="metric-value">{{ avgProcessingMinutes.toFixed(1) }}min</el-text>
                           </div>
-                          <div class="metric-side">
-                            <el-text type="info" size="small" class="metric-side-item">客服 ¥{{ totalFollowerCost.toFixed(1) }}</el-text>
-                            <el-text type="info" size="small" class="metric-side-item">操作 ¥{{ totalReviewerCost.toFixed(1) }}</el-text>
-                          </div>
-                        </div>
-                      </el-card>
-                    </el-col>
-                    <el-col :span="6">
-                      <el-card shadow="never" class="metric-card metric-card-rate">
-                        <div class="rate-card-layout">
-                          <div class="rate-card-main">
-                            <span class="rate-main-title">客服投入时间：</span>
-                            <div class="metric-value-row">
-                              <span class="metric-value metric-value-compact">{{ customerHours.toFixed(1) }}</span>
-                              <span class="metric-unit">h</span>
-                            </div>
-                          </div>
-                          <div class="rate-controls">
-                            <el-space :size="6" class="rate-inline">
-                              <span class="rate-label rate-label-cs">客服成本</span>
-                              <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="rate-input" />
-                              <el-text type="info" size="small">元/人天</el-text>
-                            </el-space>
-                            <el-space :size="6" class="rate-calculator-inline-top">
-                              <el-text type="info" size="small">原校对时间</el-text>
+                          <div class="metric-side processing-side">
+                            <el-text type="info" size="small" class="metric-side-item">校对时长：{{ avgProofreadingMinutes.toFixed(1) }} min</el-text>
+                            <el-text type="info" size="small" class="metric-side-item">审核时长：{{ avgAuditMinutes.toFixed(1) }} min</el-text>
+                            <div class="processing-side-row">
+                              <el-text type="info" size="small">原校对时长</el-text>
                               <el-input-number
                                 v-model="originalProofreadingMinutes"
                                 :step="0.5"
@@ -1909,30 +1731,10 @@ const detailSearchPlaceholder = computed(() =>
                                 controls-position="right"
                                 class="rate-calc-input"
                               />
-                              <el-text type="info" size="small">min/工作单</el-text>
-                            </el-space>
-                          </div>
-                        </div>
-                      </el-card>
-                    </el-col>
-                    <el-col :span="6">
-                      <el-card shadow="never" class="metric-card metric-card-rate">
-                        <div class="rate-card-layout">
-                          <div class="rate-card-main">
-                            <span class="rate-main-title">操作投入时间：</span>
-                            <div class="metric-value-row">
-                              <span class="metric-value metric-value-compact">{{ opsHours.toFixed(1) }}</span>
-                              <span class="metric-unit">h</span>
+                              <el-text type="info" size="small">min</el-text>
                             </div>
-                          </div>
-                          <div class="rate-controls">
-                            <el-space :size="6" class="rate-inline">
-                              <span class="rate-label rate-label-ops">操作成本</span>
-                              <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="rate-input" />
-                              <el-text type="info" size="small">元/人天</el-text>
-                            </el-space>
-                            <el-space :size="6" class="rate-calculator-inline-top">
-                              <el-text type="info" size="small">原审核时间</el-text>
+                            <div class="processing-side-row">
+                              <el-text type="info" size="small">原审核时长</el-text>
                               <el-input-number
                                 v-model="originalAuditMinutes"
                                 :step="0.5"
@@ -1941,7 +1743,42 @@ const detailSearchPlaceholder = computed(() =>
                                 controls-position="right"
                                 class="rate-calc-input"
                               />
-                              <el-text type="info" size="small">min/工作单</el-text>
+                              <el-text type="info" size="small">min</el-text>
+                            </div>
+                          </div>
+                        </div>
+                      </el-card>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-card shadow="never" class="metric-card metric-card-rate metric-card-rate-merged">
+                        <div class="rate-card-stack">
+                          <el-text type="info" size="small" class="rate-card-title">投入时间</el-text>
+                          <div class="rate-merged-row">
+                            <div class="rate-merged-metric">
+                              <span class="rate-main-title">客服：</span>
+                              <div class="metric-value-row">
+                                <span class="metric-value metric-value-compact">{{ customerHours.toFixed(1) }}</span>
+                                <span class="metric-unit">h</span>
+                              </div>
+                            </div>
+                            <el-space :size="6" class="rate-inline">
+                              <span class="rate-label rate-label-cs">客服成本</span>
+                              <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="rate-input" />
+                              <el-text type="info" size="small">元/人天</el-text>
+                            </el-space>
+                          </div>
+                          <div class="rate-merged-row">
+                            <div class="rate-merged-metric">
+                              <span class="rate-main-title">操作：</span>
+                              <div class="metric-value-row">
+                                <span class="metric-value metric-value-compact">{{ opsHours.toFixed(1) }}</span>
+                                <span class="metric-unit">h</span>
+                              </div>
+                            </div>
+                            <el-space :size="6" class="rate-inline">
+                              <span class="rate-label rate-label-ops">操作成本</span>
+                              <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="rate-input" />
+                              <el-text type="info" size="small">元/人天</el-text>
                             </el-space>
                           </div>
                         </div>
@@ -1950,13 +1787,13 @@ const detailSearchPlaceholder = computed(() =>
                   </el-row>
 
                   <el-row :gutter="16">
-                    <el-col :span="16">
+                    <el-col :span="8">
                       <el-card shadow="never" class="panel-card">
                         <el-row align="middle" class="panel-head cost-head-grid">
-                          <el-text tag="b" class="head-title-left">人力成本与单量趋势（按工作单时间聚合）</el-text>
+                          <el-text tag="b" class="head-title-left">节省成本与单量趋势</el-text>
                           <div class="chart-legend cost-center-legend">
                             <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-cost"></span>总人力成本
+                              <span class="chart-legend-dot legend-cost"></span>节省成本
                             </span>
                             <span class="chart-legend-item">
                               <span class="chart-legend-dot legend-submit"></span>工作单提交量
@@ -1964,23 +1801,44 @@ const detailSearchPlaceholder = computed(() =>
                           </div>
                           <span class="head-right-spacer"></span>
                         </el-row>
-                        <EChart :option="costTrendOption" :active="activeTab === 'cost'" :height="chartHeight(390)" />
+                        <EChart :option="costTrendOption" :active="activeTab === 'cost'" :height="chartHeight(350)" />
                       </el-card>
                     </el-col>
                     <el-col :span="8">
                       <el-card shadow="never" class="panel-card">
-                        <el-row justify="space-between" align="middle" class="panel-head">
-                          <el-text tag="b">客服/操作投入时间趋势（h）</el-text>
-                          <div class="chart-legend">
+                        <el-row align="middle" class="panel-head efficiency-head-grid">
+                          <el-text tag="b" class="head-title-left">平均处理时长趋势（min）</el-text>
+                          <div class="chart-legend efficiency-center-legend">
                             <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-cs-time"></span>客服投入时间
+                              <span class="chart-legend-dot legend-total"></span>处理总时长
                             </span>
                             <span class="chart-legend-item">
-                              <span class="chart-legend-dot legend-ops-time"></span>操作投入时间
+                              <span class="chart-legend-dot legend-proof"></span>校对时长
+                            </span>
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-audit"></span>审核时长
                             </span>
                           </div>
+                          <span class="head-right-spacer"></span>
                         </el-row>
-                        <EChart :option="costHoursOption" :active="activeTab === 'cost'" :height="chartHeight(390)" />
+                        <EChart :option="efficiencyLineOption" :active="activeTab === 'cost'" :height="chartHeight(350)" />
+                      </el-card>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-card shadow="never" class="panel-card">
+                        <el-row align="middle" class="panel-head efficiency-head-grid">
+                          <el-text tag="b" class="head-title-left">工作单提交与返工分布</el-text>
+                          <div class="chart-legend efficiency-center-legend">
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-submit"></span>提交成功
+                            </span>
+                            <span class="chart-legend-item">
+                              <span class="chart-legend-dot legend-reject"></span>返工
+                            </span>
+                          </div>
+                          <el-text type="danger" class="kpi-inline head-right-metric">返工率 {{ toPercent(metrics.rework_rate) }}</el-text>
+                        </el-row>
+                        <EChart :option="efficiencyBarOption" :active="activeTab === 'cost'" :height="chartHeight(350)" />
                       </el-card>
                     </el-col>
                   </el-row>
@@ -2006,16 +1864,30 @@ const detailSearchPlaceholder = computed(() =>
         </el-row>
 
         <el-table :data="pagedRows" row-key="sourceId" class="detail-table">
-          <el-table-column label="工单ID" prop="orderId" min-width="110">
-            <template #default="{ row }">
-              <el-text class="id-text">{{ row.orderId }}</el-text>
-            </template>
-          </el-table-column>
-          <el-table-column :label="activeTab === 'conversion' ? '来源ID' : '工作单ID'" min-width="110">
-            <template #default="{ row }">
-              <el-text class="id-text">{{ activeTab === 'conversion' ? row.sourceId : row.workOrderId }}</el-text>
-            </template>
-          </el-table-column>
+          <template v-if="activeTab === 'conversion'">
+            <el-table-column label="&#26469;&#28304;ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.sourceId }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#24037;&#21333;ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.orderId }}</el-text>
+              </template>
+            </el-table-column>
+          </template>
+          <template v-else>
+            <el-table-column label="&#24037;&#21333;ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.orderId }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#24037;&#20316;&#21333;ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.workOrderId }}</el-text>
+              </template>
+            </el-table-column>
+          </template>
           <el-table-column label="接单来源" min-width="100">
             <template #default="{ row }">
               <el-tag effect="light" round size="small" class="source-pill" :class="`source-${row.sourceKey}`">{{ row.source }}</el-tag>
@@ -2031,34 +1903,12 @@ const detailSearchPlaceholder = computed(() =>
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="漏单原因" prop="reason" min-width="140" />
-            <el-table-column label="跟进人" prop="user" min-width="90" />
+            <el-table-column label="&#28431;&#21333;&#21407;&#22240;" prop="reason" min-width="140" />
+            <el-table-column label="&#36319;&#36827;&#20154;" prop="user" min-width="90" />
+            <el-table-column label="&#21019;&#24314;&#26102;&#38388;" prop="createdAt" min-width="170" />
             <el-table-column label="操作" fixed="right" width="90" align="center">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openBusinessDetail(row)">详情</el-button>
-              </template>
-            </el-table-column>
-          </template>
-          <template v-else-if="activeTab === 'efficiency'">
-            <el-table-column label="处理总时长" prop="totalTime" min-width="120">
-              <template #default="{ row }">
-                <el-text class="total-time-text">{{ row.totalTime }}</el-text>
-              </template>
-            </el-table-column>
-            <el-table-column label="校对时长" prop="proofreadingTime" min-width="120" />
-            <el-table-column label="跟进人" prop="user" min-width="90" />
-            <el-table-column label="审核时长" prop="auditTime" min-width="120" />
-            <el-table-column label="审核人" prop="auditor" min-width="90" />
-            <el-table-column label="返工次数" prop="reworkCount" min-width="90" align="center">
-              <template #default="{ row }">
-                <el-text class="rework-count-text" :class="Number(row.reworkCount) > 0 ? 'is-positive' : 'is-zero'">
-                  {{ row.reworkCount }}
-                </el-text>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" fixed="right" width="80" align="center">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="openEfficiencyDetail(row)">详情</el-button>
               </template>
             </el-table-column>
           </template>
@@ -2090,6 +1940,7 @@ const detailSearchPlaceholder = computed(() =>
               </template>
             </el-table-column>
             <el-table-column label="跟进人" prop="user" min-width="90" />
+            <el-table-column label="结束时间" prop="endedAt" min-width="170" />
             <el-table-column label="操作" fixed="right" width="80" align="center">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openQualityDetail(row)">详情</el-button>
@@ -2097,6 +1948,11 @@ const detailSearchPlaceholder = computed(() =>
             </el-table-column>
           </template>
           <template v-else>
+            <el-table-column label="节省成本" min-width="110">
+              <template #default="{ row }">
+                <el-text class="saved-cost-text">{{ formatSavedCostPerRow(row) }}</el-text>
+              </template>
+            </el-table-column>
             <el-table-column label="处理成本" prop="processingCost" min-width="110">
               <template #default="{ row }">
                 <el-text class="processing-cost-text">{{ row.processingCost }}</el-text>
@@ -2115,6 +1971,14 @@ const detailSearchPlaceholder = computed(() =>
             <el-table-column label="审核成本" prop="auditCost" min-width="110" />
             <el-table-column label="审核时长" prop="auditTime" min-width="120" />
             <el-table-column label="审核人" prop="auditor" min-width="90" />
+            <el-table-column label="返工次数" prop="reworkCount" min-width="90" align="center">
+              <template #default="{ row }">
+                <el-text class="rework-count-text" :class="Number(row.reworkCount) > 0 ? 'is-positive' : 'is-zero'">
+                  {{ row.reworkCount }}
+                </el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="结束时间" prop="endedAt" min-width="170" />
           </template>
         </el-table>
 
@@ -2895,6 +2759,28 @@ const detailSearchPlaceholder = computed(() =>
   display: inline-block;
 }
 
+.conversion-stage-summary {
+  margin-top: 8px;
+  padding: 8px 0 0;
+  border-top: 1px dashed #e5e7eb;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.conversion-stage-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.conversion-stage-value {
+  color: var(--brand-text-strong);
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .funnel-list {
   display: flex;
   flex-direction: column;
@@ -3140,8 +3026,8 @@ const detailSearchPlaceholder = computed(() =>
 }
 
 .metric-card {
-  height: 122px;
-  min-height: 122px;
+  height: 184px;
+  min-height: 184px;
   border-radius: 8px;
   overflow: hidden;
 }
@@ -3162,6 +3048,10 @@ const detailSearchPlaceholder = computed(() =>
 .metric-card-rate :deep(.el-card__body) {
   align-items: stretch;
   padding: 12px 16px;
+}
+
+.metric-card-rate-merged :deep(.el-card__body) {
+  justify-content: flex-start;
 }
 
 .metric-card-split :deep(.el-card__body) {
@@ -3194,6 +3084,33 @@ const detailSearchPlaceholder = computed(() =>
   padding-top: 2px;
 }
 
+.processing-side {
+  flex: 1;
+  min-width: 0;
+  align-items: flex-end;
+  gap: 5px;
+  padding-top: 0;
+}
+
+.processing-side-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: auto;
+  white-space: nowrap;
+}
+
+.processing-side .metric-side-item {
+  align-self: flex-end;
+  text-align: right;
+}
+
+.processing-metric-main {
+  flex: 0 0 118px;
+  min-width: 118px;
+}
+
 .metric-side-item {
   line-height: 1.2;
   white-space: nowrap;
@@ -3208,6 +3125,23 @@ const detailSearchPlaceholder = computed(() =>
   gap: 12px;
 }
 
+.rate-card-stack {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.rate-card-title {
+  display: block;
+  width: 100%;
+  text-align: left;
+  align-self: flex-start;
+}
+
 .rate-card-main {
   min-width: 140px;
   flex: 0 0 140px;
@@ -3217,6 +3151,21 @@ const detailSearchPlaceholder = computed(() =>
   align-items: flex-start;
   justify-content: flex-start;
   padding-top: 2px;
+}
+
+.rate-merged-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.rate-merged-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 118px;
 }
 
 .rate-main-title {
@@ -3476,6 +3425,12 @@ const detailSearchPlaceholder = computed(() =>
   font-weight: 800;
 }
 
+.saved-cost-text {
+  color: #059669;
+  font-size: inherit;
+  font-weight: 800;
+}
+
 .duration-inline {
   display: inline-flex;
   align-items: baseline;
@@ -3678,6 +3633,26 @@ const detailSearchPlaceholder = computed(() =>
   margin-top: 10px;
 }
 
+.field-accuracy-table {
+  margin-top: 4px;
+}
+
+.field-accuracy-table :deep(.el-table__body-wrapper) {
+  overflow-y: auto;
+}
+
+.field-accuracy-idp {
+  color: #4f46ff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.field-accuracy-mail {
+  color: #059669;
+  font-size: 15px;
+  font-weight: 700;
+}
+
 :deep(.el-button--primary) {
   --el-button-bg-color: var(--brand-primary);
   --el-button-border-color: var(--brand-primary);
@@ -3796,3 +3771,5 @@ const detailSearchPlaceholder = computed(() =>
 }
 
 </style>
+
+

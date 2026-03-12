@@ -32,6 +32,8 @@ type WorkOrderRecord = {
   orderId: string;
   workOrderId: string;
   sourceId: string;
+  createdAt: string;
+  endedAt: string;
   bucketIndex: number;
   source: string;
   status: '成功' | '失败';
@@ -128,6 +130,16 @@ const formatUtcDate = (date: Date) => {
   const month = String(date.getUTCMonth() + 1).padStart(2, '0');
   const day = String(date.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const formatDateTime = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
 const addDaysUtc = (dateStr: string, days: number) => {
@@ -311,7 +323,7 @@ export const getDynamicData = (
     auditorPool = [normalized];
   }
 
-  const reasons = ['接口超时', '文件解析失败', '无效委托'];
+  const reasons = ['接口超时', '文件解析失败'];
 
   let totalFieldCount = 0;
   let totalRecognizedCorrect = 0;
@@ -328,6 +340,7 @@ export const getDynamicData = (
     const seed = `${tenantId}|${org}|${source}|${startDate}|${endDate}|${i}`;
 
     const bucketIndex = Math.floor(seededRandom(`${seed}|bucket`) * points.length);
+    const bucket = points[bucketIndex] || points[0];
     const sourceLabel = sourceLabels[Math.floor(seededRandom(`${seed}|source`) * sourceLabels.length)];
 
     const proofreadingMinutes = round1(4 + seededRandom(`${seed}|proof`) * 4);
@@ -417,6 +430,14 @@ export const getDynamicData = (
     const sourceId = toFiveDigitId(`${seed}|sid`, i * 23 + 7);
     const orderId = status === '失败' ? '' : toFiveDigitId(`${seed}|oid`, i * 17);
     const workOrderId = status === '失败' ? '' : toFiveDigitId(`${seed}|woid`, i * 23 + 7);
+    const createdAtTs =
+      bucket.startTs +
+      Math.floor((bucket.endTs - bucket.startTs - 1) * seededRandom(`${seed}|created_at`));
+    const createdAt = formatDateTime(new Date(Math.max(bucket.startTs, createdAtTs)));
+    const finishLagMinutes =
+      processingMinutes + reworkCount * 18 + 8 + Math.round(seededRandom(`${seed}|ended_at`) * 36);
+    const endedAtTs = createdAtTs + Math.max(5, finishLagMinutes) * 60 * 1000;
+    const endedAt = status === '失败' ? '-' : formatDateTime(new Date(Math.max(createdAtTs, endedAtTs)));
     const follower = status === '失败' ? '' : user;
     const reviewer = status === '失败' ? '' : auditor;
 
@@ -424,6 +445,8 @@ export const getDynamicData = (
       orderId,
       workOrderId,
       sourceId,
+      createdAt,
+      endedAt,
       bucketIndex,
       source: sourceLabel,
       status,
@@ -576,15 +599,13 @@ export const getDynamicData = (
   const sourceInputCount = Math.max(createdCount, Math.round(createdCount / sourceToCreateRate));
   const missedCount = Math.max(0, sourceInputCount - createdCount);
 
-  const reasonWeightA = 0.4 + seededRandom(`${tenantId}|${org}|${source}|reasonA`) * 0.15;
-  const reasonWeightB = 0.25 + seededRandom(`${tenantId}|${org}|${source}|reasonB`) * 0.15;
-
+  const reasonWeightA = 0.5 + seededRandom(`${tenantId}|${org}|${source}|reasonA`) * 0.25;
   const reasonValueA = Math.round(missedCount * reasonWeightA);
-  const reasonValueB = Math.round(missedCount * reasonWeightB);
-  const reasonValueC = Math.max(0, missedCount - reasonValueA - reasonValueB);
+  const reasonValueB = Math.max(0, missedCount - reasonValueA);
 
-  const missedValues = [reasonValueA, reasonValueB, reasonValueC];
-  const missed = MISSED_ORDER_REASONS.map((item, idx) => ({
+  const missedValues = [reasonValueA, reasonValueB];
+  const activeMissReasonTemplates = [MISSED_ORDER_REASONS[0], MISSED_ORDER_REASONS[2]].filter(Boolean);
+  const missed = activeMissReasonTemplates.map((item, idx) => ({
     ...item,
     value: missedValues[idx] ?? 0
   }));
@@ -675,6 +696,8 @@ export const getDynamicData = (
     orderId: order.orderId,
     workOrderId: order.workOrderId,
     sourceId: order.sourceId,
+    createdAt: order.createdAt,
+    endedAt: order.endedAt,
     source: order.source,
     status: order.status,
     time: order.totalTime,
