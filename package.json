@@ -1,14 +1,15 @@
 {
   "name": "vue-dashboard",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "vite --port=3000",
     "dev:start": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-dev.ps1",
     "dev:stop": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-local-dev.ps1",
     "dev:status": "powershell -ExecutionPolicy Bypass -File ./scripts/status-local-dev.ps1",
     "dev:restart": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-local-dev.ps1 && powershell -ExecutionPolicy Bypass -File ./scripts/start-local-dev.ps1",
+    "dev:cert": "powershell -ExecutionPolicy Bypass -File ./scripts/ensure-dev-cert.ps1",
     "build": "vite build",
     "preview": "vite preview",
     "preview:cloudflare": "vite preview --host 0.0.0.0 --port 4173",

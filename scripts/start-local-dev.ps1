@@ -5,10 +5,14 @@ $logsDir = Join-Path $repoRoot "logs"
 $logFile = Join-Path $logsDir "local-dev.log"
 $pidFile = Join-Path $logsDir "local-dev.pid"
 $port = 3000
+$networkAddress = "10.10.127.107"
+$ensureCertScript = Join-Path $PSScriptRoot "ensure-dev-cert.ps1"
 
 if (-not (Test-Path $logsDir)) {
   New-Item -ItemType Directory -Path $logsDir | Out-Null
 }
+
+& $ensureCertScript | Out-Null
 
 function Get-PortListener {
   Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -51,8 +55,8 @@ if ($listener) {
     }
     $managedState | ConvertTo-Json | Set-Content $pidFile
     Write-Output "Dev server already running."
-    Write-Output "Local: http://localhost:$port/"
-    Write-Output "Network: http://10.10.127.107:$port/"
+    Write-Output "Local: https://localhost:$port/"
+    Write-Output "Network: https://$networkAddress`:$port/"
     exit 0
   }
 
@@ -62,9 +66,15 @@ if ($listener) {
 $cmdArgs = "/c cd /d `"$repoRoot`" && npm run dev >> `"$logFile`" 2>&1"
 $launcher = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -WindowStyle Hidden -PassThru
 
-Start-Sleep -Seconds 4
+$listener = $null
+for ($attempt = 0; $attempt -lt 15; $attempt++) {
+  Start-Sleep -Seconds 1
+  $listener = Get-PortListener
+  if ($listener) {
+    break
+  }
+}
 
-$listener = Get-PortListener
 if (-not $listener) {
   if ($launcher -and -not $launcher.HasExited) {
     cmd /c "taskkill /PID $($launcher.Id) /T /F" | Out-Null
@@ -84,6 +94,6 @@ $pidState = [pscustomobject]@{
 $pidState | ConvertTo-Json | Set-Content $pidFile
 
 Write-Output "Dev server started."
-Write-Output "Local: http://localhost:$port/"
-Write-Output "Network: http://10.10.127.107:$port/"
+Write-Output "Local: https://localhost:$port/"
+Write-Output "Network: https://$networkAddress`:$port/"
 Write-Output "Log: $logFile"

@@ -6,9 +6,9 @@
 
 This contains everything you need to run your app locally.
 
-Version: V1.2 (2026-03-09)
+Version: V1.5 (2026-03-13)
 
-Public URL (current): http://10.10.127.107:3000/
+Public URL (current): https://10.10.127.107:3000/
 
 ## Run Locally
 
