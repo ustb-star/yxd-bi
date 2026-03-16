@@ -15,6 +15,8 @@ type TabName = 'conversion' | 'quality' | 'cost';
 type TrendType = 'up' | 'down' | 'neutral';
 type EfficiencyFocus = 'processing-count' | 'processing-duration' | 'labor-cost';
 type TableStateKey = TabName | 'efficiencyCost';
+type FieldRecognitionSortProp = 'idpAccuracy' | 'mailAccuracy';
+type FieldRecognitionSortOrder = 'ascending' | 'descending';
 
 type WorkOrderRow = {
   orderId: string;
@@ -1025,7 +1027,9 @@ const qualityDimensionRows = computed(() => {
 
 const clampAccuracyValue = (value: number) => Math.max(55, Math.min(99.5, value));
 
-const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
+const parseAccuracyPercent = (value: string) => Number(value.replace('%', '')) || 0;
+
+const rawFieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
   const idpBase = toQualityPercent(metrics.value.file_recognition_accuracy ?? metrics.value.recognition_accuracy);
   const mailBase = toQualityPercent(metrics.value.mail_recognition_accuracy ?? metrics.value.recognition_accuracy);
   const sceneSeed = hashInt(`${startDate.value}|${endDate.value}|${fixedTenantId}|${filters.source}|field-recognition`);
@@ -1045,13 +1049,55 @@ const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
   });
 });
 
-const showFieldIdpColumn = computed(() => filters.source !== 'email');
-const showFieldMailColumn = computed(() => filters.source !== 'file');
-const fieldRecognitionHint = computed(() => {
-  if (showFieldIdpColumn.value && showFieldMailColumn.value) return 'IDP / MAIL';
-  if (showFieldIdpColumn.value) return '仅展示 IDP';
-  return '仅展示 MAIL';
+const fieldRecognitionSort = ref<{ prop: FieldRecognitionSortProp; order: FieldRecognitionSortOrder }>({
+  prop: 'idpAccuracy',
+  order: 'descending'
 });
+
+const sortFieldRecognitionRows = (
+  rows: FieldRecognitionRow[],
+  prop: FieldRecognitionSortProp,
+  order: FieldRecognitionSortOrder
+) =>
+  [...rows].sort((left, right) => {
+    const delta = parseAccuracyPercent(left[prop]) - parseAccuracyPercent(right[prop]);
+    return order === 'ascending' ? delta : -delta;
+  });
+
+const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() =>
+  sortFieldRecognitionRows(rawFieldRecognitionRows.value, fieldRecognitionSort.value.prop, fieldRecognitionSort.value.order)
+);
+
+const fieldRecognitionSecondaryLabel = computed(() => {
+  if (filters.source === 'file') return '委托说明';
+  if (filters.source === 'all') return 'MAIL/委托说明';
+  return 'MAIL';
+});
+
+const fieldRecognitionHint = computed(
+  () => `IDP / ${fieldRecognitionSecondaryLabel.value} · 默认按 IDP 准确率倒序`
+);
+
+const handleFieldRecognitionSortChange = ({
+  prop,
+  order
+}: {
+  prop: FieldRecognitionSortProp | null;
+  order: FieldRecognitionSortOrder | null;
+}) => {
+  if (prop === 'idpAccuracy' || prop === 'mailAccuracy') {
+    fieldRecognitionSort.value = {
+      prop,
+      order: order ?? 'descending'
+    };
+    return;
+  }
+
+  fieldRecognitionSort.value = {
+    prop: 'idpAccuracy',
+    order: 'descending'
+  };
+};
 
 const savedCostTrendRows = computed(() =>
   efficiencyRows.value.map((row) => {
@@ -1702,10 +1748,10 @@ const handleExport = async () => {
       org: filters.org,
       startDate: startDate.value,
       endDate: endDate.value,
-        csRate: csRate.value,
-        opsRate: opsRate.value,
-        originalProofreadingMinutes: originalProofreadingMinutes.value,
-        originalAuditMinutes: originalAuditMinutes.value,
+      csRate: csRate.value,
+      opsRate: opsRate.value,
+      originalProofreadingMinutes: originalProofreadingMinutes.value,
+      originalAuditMinutes: originalAuditMinutes.value,
       data: dashboardData.value,
       fieldRecognitionRows: fieldRecognitionRows.value
     });
@@ -2151,14 +2197,32 @@ const detailSearchPlaceholder = computed(() => {
                         <el-text tag="b">字段识别准确率（字段维度）</el-text>
                         <el-text type="info" size="small">{{ fieldRecognitionHint }}</el-text>
                       </el-row>
-                      <el-table :data="fieldRecognitionRows" class="field-accuracy-table" height="360">
+                      <el-table
+                        :data="fieldRecognitionRows"
+                        class="field-accuracy-table"
+                        height="360"
+                        :default-sort="{ prop: 'idpAccuracy', order: 'descending' }"
+                        @sort-change="handleFieldRecognitionSortChange"
+                      >
                         <el-table-column prop="field" label="字段名称" min-width="180" />
-                        <el-table-column v-if="showFieldIdpColumn" prop="idpAccuracy" label="IDP" min-width="120" align="center">
+                        <el-table-column
+                          prop="idpAccuracy"
+                          label="IDP"
+                          min-width="120"
+                          align="center"
+                          sortable="custom"
+                        >
                           <template #default="{ row }">
                             <el-text class="field-accuracy-idp">{{ row.idpAccuracy }}</el-text>
                           </template>
                         </el-table-column>
-                        <el-table-column v-if="showFieldMailColumn" prop="mailAccuracy" label="MAIL" min-width="120" align="center">
+                        <el-table-column
+                          prop="mailAccuracy"
+                          :label="fieldRecognitionSecondaryLabel"
+                          min-width="120"
+                          align="center"
+                          sortable="custom"
+                        >
                           <template #default="{ row }">
                             <el-text class="field-accuracy-mail">{{ row.mailAccuracy }}</el-text>
                           </template>

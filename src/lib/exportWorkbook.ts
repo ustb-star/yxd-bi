@@ -57,6 +57,12 @@ const SOURCE_LABEL_MAP: Record<SourceType, string> = {
   file: '文件接单'
 };
 
+const getFieldRecognitionSecondaryLabel = (source: SourceType) => {
+  if (source === 'file') return '委托说明';
+  if (source === 'all') return 'MAIL/委托说明';
+  return 'MAIL';
+};
+
 const toText = (value: unknown) => String(value ?? '');
 
 const toNumber = (value: unknown, fallback: number = 0) => {
@@ -330,19 +336,10 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
   addBlankRow(rows);
 
   if (fieldRecognitionRows.length > 0) {
-    const showIdp = params.source !== 'email';
-    const showMail = params.source !== 'file';
-    const header = ['字段名称'];
-    if (showIdp) header.push('IDP');
-    if (showMail) header.push('MAIL');
-
     rows.push(['字段识别准确率（字段维度）']);
-    rows.push(header);
+    rows.push(['字段名称', 'IDP', getFieldRecognitionSecondaryLabel(params.source)]);
     fieldRecognitionRows.forEach((item) => {
-      const row = [toText(item.field)];
-      if (showIdp) row.push(toText(item.idpAccuracy));
-      if (showMail) row.push(toText(item.mailAccuracy));
-      rows.push(row);
+      rows.push([toText(item.field), toText(item.idpAccuracy), toText(item.mailAccuracy)]);
     });
     addBlankRow(rows);
   }
