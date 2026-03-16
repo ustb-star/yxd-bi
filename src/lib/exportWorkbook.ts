@@ -40,7 +40,6 @@ type DashboardData = {
 type ExportWorkbookParams = {
   analysisView: AnalysisView;
   source: SourceType;
-  tenant: string;
   org: string;
   startDate: string;
   endDate: string;
@@ -181,8 +180,7 @@ const buildConversionSheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['租户', toText(params.tenant)]);
-  rows.push(['部门/个人', toText(params.org)]);
+  rows.push(['组织范围', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -251,8 +249,7 @@ const buildEfficiencySheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['租户', toText(params.tenant)]);
-  rows.push(['部门/个人', toText(params.org)]);
+  rows.push(['组织范围', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -324,8 +321,7 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['租户', toText(params.tenant)]);
-  rows.push(['部门/个人', toText(params.org)]);
+  rows.push(['组织范围', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -409,8 +405,7 @@ const buildEfficiencyCostSheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['租户', toText(params.tenant)]);
-  rows.push(['部门/个人', toText(params.org)]);
+  rows.push(['组织范围', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -534,8 +529,7 @@ const buildEfficiencyPersonSheet = (params: ExportWorkbookParams) => {
 
   addSummaryTitle(rows);
   rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
-  rows.push(['租户', toText(params.tenant)]);
-  rows.push(['部门/个人', toText(params.org)]);
+  rows.push(['组织范围', toText(params.org)]);
   rows.push(['时间', `${params.startDate}~${endDate}`]);
   addBlankRow(rows);
 
@@ -658,7 +652,6 @@ const saveBlobWithPicker = async (blob: Blob, filename: string) => {
 
 export const exportDashboardWorkbook = async (params: ExportWorkbookParams) => {
   const sourceLabel = SOURCE_LABEL_MAP[params.source];
-  const tenantLabel = toText(params.tenant);
   const orgLabel = toText(params.org);
   const endDate = params.endDate || params.startDate;
   const compactStartDate = params.startDate.replace(/-/g, '');
@@ -681,7 +674,7 @@ export const exportDashboardWorkbook = async (params: ExportWorkbookParams) => {
     type: EXCEL_MIME_TYPE
   });
 
-  const filename = `${safeNamePart(filenamePrefix)}-${safeNamePart(sourceLabel)}-${safeNamePart(tenantLabel)}-${safeNamePart(orgLabel)}-${safeNamePart(timeLabel)}.xlsx`;
+  const filename = `${safeNamePart(filenamePrefix)}-${safeNamePart(sourceLabel)}-${safeNamePart(orgLabel)}-${safeNamePart(timeLabel)}.xlsx`;
 
   if (!(await saveBlobWithPicker(blob, filename))) {
     downloadBlobByLink(blob, filename);

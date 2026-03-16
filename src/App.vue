@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Document, Download, Filter, Search, View } from '@element-plus/icons-vue';
+import { Document, Download, Filter, Operation, Search, View } from '@element-plus/icons-vue';
 import type { EChartsOption } from 'echarts';
 import * as XLSX from 'xlsx';
 import { getDynamicData } from './lib/dataGenerator';
@@ -123,10 +123,9 @@ const sourceOptions = [
   { label: '文件接单', value: 'file' as SourceFilter }
 ];
 
-const tenantOptions = TENANT_OPTIONS;
-
-const tenantIdSet = new Set(tenantOptions.map((item) => item.id));
-const defaultTenantId = tenantOptions[0]?.id || 'tenant-1001';
+const fixedTenantId = TENANT_OPTIONS[0]?.id || 'tenant-1001';
+const allCompanyNode = TENANT_OPTIONS[0]?.orgTree?.[0] || { value: '全公司', label: '全公司' };
+const companyOrgTree = TENANT_OPTIONS[0]?.orgTree || [allCompanyNode];
 
 const dateShortcuts = [
   {
@@ -277,8 +276,7 @@ const fieldMockValueMap: Record<string, string> = {
 };
 
 const filters = reactive({
-  tenantId: defaultTenantId,
-  org: '全公司',
+  org: allCompanyNode.value,
   source: 'all' as SourceFilter
 });
 
@@ -308,46 +306,23 @@ const analysisSwitchIndex = computed(() => {
   return index >= 0 ? index : 0;
 });
 
-const tenantKeyword = ref('');
-const filteredTenantOptions = computed(() => {
-  const query = tenantKeyword.value.trim().toLowerCase();
-  if (!query) return tenantOptions;
-  return tenantOptions.filter((item) => {
-    const name = item.name.toLowerCase();
-    const id = item.id.toLowerCase();
-    return name.includes(query) || id.includes(query);
-  });
-});
-
-const fullOrgTree = computed<OrgTreeNode[]>(() => {
-  const tenant = tenantOptions.find((item) => item.id === filters.tenantId);
-  return tenant?.orgTree || tenantOptions[0]?.orgTree || [{ value: '全公司', label: '全公司' }];
-});
+const fullOrgTree = computed<OrgTreeNode[]>(() => companyOrgTree);
+const efficiencyOrgTree = computed<OrgTreeNode[]>(() =>
+  fullOrgTree.value.filter((node) => node.value !== allCompanyNode.value)
+);
 
 const orgTree = computed<OrgTreeNode[]>(() => {
   if (activeAnalysisView.value === 'efficiency') {
-    return fullOrgTree.value;
+    return efficiencyOrgTree.value;
   }
 
-  return fullOrgTree.value.map((node) => ({
-    value: node.value,
-    label: node.label
-  }));
+  return [
+    {
+      value: allCompanyNode.value,
+      label: allCompanyNode.label
+    }
+  ];
 });
-
-const selectedTenantName = computed(
-  () => tenantOptions.find((item) => item.id === filters.tenantId)?.name || tenantOptions[0]?.name || filters.tenantId
-);
-
-const handleTenantFilter = (query: string) => {
-  tenantKeyword.value = query;
-};
-
-const handleTenantVisibleChange = (visible: boolean) => {
-  if (!visible) {
-    tenantKeyword.value = '';
-  }
-};
 
 const isOrgPathValid = (path: string[], tree: OrgTreeNode[]) => {
   if (!Array.isArray(path) || path.length === 0) return false;
@@ -360,17 +335,42 @@ const isOrgPathValid = (path: string[], tree: OrgTreeNode[]) => {
   return true;
 };
 
-const orgPath = ref<string[]>(['全公司']);
+const orgPath = ref<string[]>([allCompanyNode.value]);
 const orgProps = {
   checkStrictly: true,
   emitPath: true
 };
 
-const TOP_FILTER_STORAGE_KEY = 'yxd-bi-top-filters-v1';
+const orgSelectorPlaceholder = computed(() => (activeAnalysisView.value === 'workorder' ? '公司' : '部门/个人'));
+const getOrgTreeByView = (view: AnalysisView) =>
+  view === 'workorder'
+    ? [
+        {
+          value: allCompanyNode.value,
+          label: allCompanyNode.label
+        }
+      ]
+    : efficiencyOrgTree.value;
+const getDefaultOrgPath = (view: AnalysisView) => {
+  if (view === 'workorder') return [allCompanyNode.value];
+  const firstDept = efficiencyOrgTree.value[0];
+  return firstDept ? [firstDept.value] : [allCompanyNode.value];
+};
+const isOrgPathAllowedForView = (path: string[], view: AnalysisView) => {
+  if (!isOrgPathValid(path, getOrgTreeByView(view))) return false;
+  if (view === 'efficiency' && path[0] === allCompanyNode.value) return false;
+  return true;
+};
+const applyOrgPathForView = (view: AnalysisView, path?: string[]) => {
+  const nextPath = path && isOrgPathAllowedForView(path, view) ? [...path] : getDefaultOrgPath(view);
+  orgPath.value = nextPath;
+  filters.org = nextPath[nextPath.length - 1] || getDefaultOrgPath(view)[0] || allCompanyNode.value;
+};
+
+const TOP_FILTER_STORAGE_KEY = 'yxd-bi-top-filters-v2';
 
 type PersistedTopFilters = {
   dateRange?: [string, string];
-  tenantId?: string;
   orgPath?: string[];
   source?: SourceFilter;
   analysisView?: AnalysisView;
@@ -415,7 +415,6 @@ let switchingTimer: number | null = null;
 
 const isDateText = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 const isSourceFilter = (value: unknown): value is SourceFilter => value === 'all' || value === 'email' || value === 'file';
-const isTenantId = (value: unknown): value is string => typeof value === 'string' && tenantIdSet.has(value);
 const isAnalysisView = (value: unknown): value is AnalysisView => value === 'workorder' || value === 'efficiency';
 const isTabName = (value: unknown): value is TabName => value === 'conversion' || value === 'quality' || value === 'cost';
 const isNonNegativeFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -431,10 +430,6 @@ const restoreTopFilters = () => {
     isDateText(parsed.dateRange[1])
   ) {
     dateRange.value = [parsed.dateRange[0], parsed.dateRange[1]];
-  }
-
-  if (isTenantId(parsed.tenantId)) {
-    filters.tenantId = parsed.tenantId;
   }
 
   if (isSourceFilter(parsed.source)) {
@@ -465,26 +460,20 @@ const restoreTopFilters = () => {
     originalAuditMinutes.value = parsed.originalAuditMinutes;
   }
 
-  if (
+  const persistedOrgPath =
     Array.isArray(parsed.orgPath) &&
     parsed.orgPath.length > 0 &&
-    parsed.orgPath.every((item) => typeof item === 'string' && item.trim().length > 0) &&
-    isOrgPathValid(parsed.orgPath, orgTree.value)
-  ) {
-    orgPath.value = [...parsed.orgPath];
-    filters.org = parsed.orgPath[parsed.orgPath.length - 1] || '全公司';
-  } else {
-    orgPath.value = ['全公司'];
-    filters.org = '全公司';
-  }
+    parsed.orgPath.every((item) => typeof item === 'string' && item.trim().length > 0)
+      ? parsed.orgPath
+      : undefined;
+  applyOrgPathForView(activeAnalysisView.value, persistedOrgPath);
 };
 
 const persistTopFilters = () => {
   if (typeof window === 'undefined') return;
   const payload: PersistedTopFilters = {
     dateRange: [dateRange.value?.[0] || '2025-12-02', dateRange.value?.[1] || '2026-03-02'],
-    tenantId: filters.tenantId,
-    orgPath: orgPath.value.length ? [...orgPath.value] : ['全公司'],
+    orgPath: orgPath.value.length ? [...orgPath.value] : [allCompanyNode.value],
     source: filters.source,
     analysisView: activeAnalysisView.value,
     activeTab: activeTab.value,
@@ -525,7 +514,7 @@ const dashboardData = computed(() =>
     filters.source,
     csRate.value,
     opsRate.value,
-    filters.tenantId
+    fixedTenantId
   )
 );
 
@@ -778,7 +767,7 @@ const previousDashboardData = computed(() => {
   const periodDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1);
   const previousStart = shiftDateText(startDate.value, -periodDays);
   const previousEnd = shiftDateText(startDate.value, -1);
-  return getDynamicData(previousStart, previousEnd, filters.org, filters.source, csRate.value, opsRate.value, filters.tenantId, {
+  return getDynamicData(previousStart, previousEnd, filters.org, filters.source, csRate.value, opsRate.value, fixedTenantId, {
     disableComparison: true
   });
 });
@@ -1045,7 +1034,7 @@ const clampAccuracyValue = (value: number) => Math.max(55, Math.min(99.5, value)
 const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
   const idpBase = toQualityPercent(metrics.value.file_recognition_accuracy ?? metrics.value.recognition_accuracy);
   const mailBase = toQualityPercent(metrics.value.mail_recognition_accuracy ?? metrics.value.recognition_accuracy);
-  const sceneSeed = hashInt(`${startDate.value}|${endDate.value}|${filters.tenantId}|${filters.source}|field-recognition`);
+  const sceneSeed = hashInt(`${startDate.value}|${endDate.value}|${fixedTenantId}|${filters.source}|field-recognition`);
 
   return fieldRecognitionFields.map((field, index) => {
     const seed = sceneSeed + index * 53;
@@ -1589,27 +1578,16 @@ const handleAnalysisViewChange = (value: AnalysisView) => {
     activeTab.value = lastWorkOrderTab.value || 'conversion';
   }
 
-  if (value === 'workorder' && orgPath.value.length > 1) {
-    orgPath.value = [orgPath.value[0] || '全公司'];
-  }
+  applyOrgPathForView(value);
 };
 
 const handleOrgChange = (value: string[]) => {
   if (!value || value.length === 0) {
-    orgPath.value = ['全公司'];
-    filters.org = '全公司';
+    applyOrgPathForView(activeAnalysisView.value);
     return;
   }
-  filters.org = value[value.length - 1] || '全公司';
+  applyOrgPathForView(activeAnalysisView.value, value);
 };
-
-watch(
-  () => filters.tenantId,
-  () => {
-    orgPath.value = ['全公司'];
-    filters.org = '全公司';
-  }
-);
 
 watch(
   () => activeAnalysisView.value,
@@ -1622,9 +1600,7 @@ watch(
       activeTab.value = lastWorkOrderTab.value || 'conversion';
     }
 
-    if (view === 'workorder' && orgPath.value.length > 1) {
-      orgPath.value = [orgPath.value[0] || '全公司'];
-    }
+    applyOrgPathForView(view, orgPath.value);
   }
 );
 
@@ -1632,10 +1608,10 @@ watch(
   orgPath,
   (path) => {
     if (!path || path.length === 0) {
-      filters.org = '全公司';
+      filters.org = allCompanyNode.value;
       return;
     }
-    filters.org = path[path.length - 1] || '全公司';
+    filters.org = path[path.length - 1] || allCompanyNode.value;
   },
   { deep: true }
 );
@@ -1643,7 +1619,6 @@ watch(
 watch(
   [
     dateRange,
-    () => filters.tenantId,
     orgPath,
     () => filters.source,
     () => activeAnalysisView.value,
@@ -1670,7 +1645,6 @@ watch(
   () => [
     startDate.value,
     endDate.value,
-    filters.tenantId,
     filters.org,
     filters.source,
     csRate.value,
@@ -1689,7 +1663,6 @@ watch(
     activeTab.value,
     startDate.value,
     endDate.value,
-    filters.tenantId,
     filters.org,
     filters.source,
     csRate.value,
@@ -1732,7 +1705,6 @@ const handleExport = async () => {
     await exportDashboardWorkbook({
       analysisView: activeAnalysisView.value,
       source: filters.source,
-      tenant: selectedTenantName.value,
       org: filters.org,
       startDate: startDate.value,
       endDate: endDate.value,
@@ -1940,150 +1912,131 @@ const detailSearchPlaceholder = computed(() => {
       <div class="page-container">
     <el-space direction="vertical" :size="16" fill class="page-stack">
       <el-card shadow="never" class="header-card">
-        <el-row class="top-bar" justify="space-between" align="middle">
-          <el-col :span="8">
-            <el-space :size="12" class="brand-block">
-              <div class="brand-icon-wrap">
-                <el-icon>
-                  <Filter />
-                </el-icon>
-              </div>
-              <el-space direction="vertical" :size="2">
-                <el-text tag="b" class="main-title">小沓-接单数据分析看板</el-text>
-                <el-text type="info" class="main-subtitle">MARITIME FORWARDING DASHBOARD</el-text>
-              </el-space>
-            </el-space>
-          </el-col>
-          <el-col :span="16" class="top-controls-col">
-            <el-space :size="10" class="top-controls" :wrap="false">
-              <el-date-picker
-                v-model="dateRange"
-                type="daterange"
-                value-format="YYYY-MM-DD"
-                start-placeholder="开始日期"
-                end-placeholder="结束日期"
-                :shortcuts="dateShortcuts"
-                :clearable="false"
-                class="control-date-inline"
-                popper-class="top-filter-popper"
-              />
-              <el-select
-                v-model="filters.tenantId"
-                filterable
-                :filter-method="handleTenantFilter"
-                :clearable="false"
-                placeholder="租户"
-                class="control-tenant-inline"
-                popper-class="tenant-select-popper"
-                @visible-change="handleTenantVisibleChange"
-              >
-                <el-option
-                  v-for="tenant in filteredTenantOptions"
-                  :key="tenant.id"
-                  :label="tenant.name"
-                  :value="tenant.id"
-                >
-                  <span class="tenant-option-name">{{ tenant.name }}</span>
-                  <el-text type="info" size="small" class="tenant-option-id">{{ tenant.id }}</el-text>
-                </el-option>
-              </el-select>
-              <el-cascader
-                v-model="orgPath"
-                :options="orgTree"
-                :props="orgProps"
-                :show-all-levels="false"
-                filterable
-                clearable
-                placeholder="组织层级"
-                class="control-org-inline"
-                popper-class="top-filter-popper"
-                @change="handleOrgChange"
-              />
+        <div class="header-main-row">
+          <el-space :size="12" class="brand-block">
+            <div class="brand-icon-wrap">
+              <el-icon>
+                <Filter />
+              </el-icon>
+            </div>
+            <el-text tag="b" class="main-title">小沓-BI</el-text>
+          </el-space>
+          <div class="top-controls-row">
+            <div class="top-controls">
+            <div class="control-group-inline control-group-analysis">
+              <el-text type="info" size="small" class="top-control-label">分析维度</el-text>
               <div
-                class="source-switch"
+                class="analysis-switch"
                 role="radiogroup"
-                aria-label="来源"
-                :style="{ '--source-index': String(sourceSwitchIndex), '--source-count': String(sourceOptions.length) }"
+                aria-label="分析维度切换"
+                :style="{ '--analysis-index': String(analysisSwitchIndex), '--analysis-count': String(analysisViewOptions.length) }"
               >
-                <span class="source-switch-thumb"></span>
+                <span class="analysis-switch-thumb"></span>
                 <button
-                  v-for="item in sourceOptions"
+                  v-for="item in analysisViewOptions"
                   :key="item.value"
                   type="button"
-                  class="source-switch-item"
-                  :class="{ 'is-active': filters.source === item.value }"
-                  @click="filters.source = item.value"
+                  class="analysis-switch-item"
+                  :class="{ 'is-active': activeAnalysisView === item.value }"
+                  @click="handleAnalysisViewChange(item.value)"
                 >
                   {{ item.label }}
                 </button>
               </div>
-              <el-button type="primary" :icon="Download" :loading="exporting" @click="handleExport">导出</el-button>
-            </el-space>
-          </el-col>
-        </el-row>
-        <div class="global-parameter-bar">
-          <div class="global-toolbar-main">
-            <el-space :size="10" align="center">
-              <div class="title-line"></div>
-              <el-text tag="b">分析维度</el-text>
-            </el-space>
+            </div>
+            <el-cascader
+              v-model="orgPath"
+              :options="orgTree"
+              :props="orgProps"
+              :show-all-levels="false"
+              filterable
+              :clearable="activeAnalysisView === 'efficiency'"
+              :disabled="activeAnalysisView === 'workorder'"
+              :placeholder="orgSelectorPlaceholder"
+              class="control-org-inline"
+              popper-class="top-filter-popper"
+              @change="handleOrgChange"
+            />
+            <el-date-picker
+              v-model="dateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              :shortcuts="dateShortcuts"
+              :clearable="false"
+              class="control-date-inline"
+              popper-class="top-filter-popper"
+            />
+            <el-popover placement="bottom" :width="368" trigger="click" popper-class="cost-config-popper">
+              <template #reference>
+                <el-button class="cost-config-trigger">
+                  <el-icon><Operation /></el-icon>
+                  <span>成本参数</span>
+                </el-button>
+              </template>
+              <div class="cost-config-panel">
+                <div class="cost-config-head">
+                  <el-text tag="b">全局成本参数</el-text>
+                  <el-text type="info" size="small">影响节省成本、处理成本与人效口径</el-text>
+                </div>
+                <div class="cost-config-grid">
+                  <div class="cost-config-row">
+                    <span class="cost-config-label">客服成本</span>
+                    <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="global-parameter-input" />
+                    <el-text type="info" size="small">元/人天</el-text>
+                  </div>
+                  <div class="cost-config-row">
+                    <span class="cost-config-label">操作成本</span>
+                    <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="global-parameter-input" />
+                    <el-text type="info" size="small">元/人天</el-text>
+                  </div>
+                  <div class="cost-config-row">
+                    <span class="cost-config-label">原校对时长</span>
+                    <el-input-number
+                      v-model="originalProofreadingMinutes"
+                      :step="0.5"
+                      :min="0"
+                      :precision="1"
+                      controls-position="right"
+                      class="global-parameter-input global-parameter-input-minutes"
+                    />
+                    <el-text type="info" size="small">min/单</el-text>
+                  </div>
+                  <div class="cost-config-row">
+                    <span class="cost-config-label">原审核时长</span>
+                    <el-input-number
+                      v-model="originalAuditMinutes"
+                      :step="0.5"
+                      :min="0"
+                      :precision="1"
+                      controls-position="right"
+                      class="global-parameter-input global-parameter-input-minutes"
+                    />
+                    <el-text type="info" size="small">min/单</el-text>
+                  </div>
+                </div>
+              </div>
+            </el-popover>
             <div
-              class="analysis-switch"
+              class="source-switch"
               role="radiogroup"
-              aria-label="分析维度切换"
-              :style="{ '--analysis-index': String(analysisSwitchIndex), '--analysis-count': String(analysisViewOptions.length) }"
+              aria-label="来源"
+              :style="{ '--source-index': String(sourceSwitchIndex), '--source-count': String(sourceOptions.length) }"
             >
-              <span class="analysis-switch-thumb"></span>
+              <span class="source-switch-thumb"></span>
               <button
-                v-for="item in analysisViewOptions"
+                v-for="item in sourceOptions"
                 :key="item.value"
                 type="button"
-                class="analysis-switch-item"
-                :class="{ 'is-active': activeAnalysisView === item.value }"
-                @click="handleAnalysisViewChange(item.value)"
+                class="source-switch-item"
+                :class="{ 'is-active': filters.source === item.value }"
+                @click="filters.source = item.value"
               >
                 {{ item.label }}
               </button>
             </div>
-            <el-text type="info" size="small" class="analysis-switch-note">
-              {{ activeAnalysisView === 'workorder' ? '查看整体单量、转化与识别质量' : '查看人员效率、人力成本与处理表现' }}
-            </el-text>
-          </div>
-          <div class="global-parameter-list">
-            <el-text type="info" size="small" class="global-parameter-inline-note">全局成本参数</el-text>
-            <div class="global-parameter-item">
-              <span class="global-parameter-label">客服成本</span>
-              <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="global-parameter-input" />
-              <el-text type="info" size="small">元/人天</el-text>
-            </div>
-            <div class="global-parameter-item">
-              <span class="global-parameter-label">操作成本</span>
-              <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="global-parameter-input" />
-              <el-text type="info" size="small">元/人天</el-text>
-            </div>
-            <div class="global-parameter-item">
-              <span class="global-parameter-label">原校对时长</span>
-              <el-input-number
-                v-model="originalProofreadingMinutes"
-                :step="0.5"
-                :min="0"
-                :precision="1"
-                controls-position="right"
-                class="global-parameter-input global-parameter-input-minutes"
-              />
-              <el-text type="info" size="small">min/单</el-text>
-            </div>
-            <div class="global-parameter-item">
-              <span class="global-parameter-label">原审核时长</span>
-              <el-input-number
-                v-model="originalAuditMinutes"
-                :step="0.5"
-                :min="0"
-                :precision="1"
-                controls-position="right"
-                class="global-parameter-input global-parameter-input-minutes"
-              />
-              <el-text type="info" size="small">min/单</el-text>
+            <el-button type="primary" :icon="Download" :loading="exporting" @click="handleExport">导出</el-button>
             </div>
           </div>
         </div>
@@ -2839,57 +2792,45 @@ const detailSearchPlaceholder = computed(() => {
   padding: 10px 16px;
 }
 
-.top-bar {
+.header-main-row {
   min-height: 54px;
-}
-
-.global-parameter-bar {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid #e8edf6;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 18px;
 }
 
-.global-toolbar-main {
+.top-controls-row {
   min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.global-parameter-list {
   flex: 1;
   display: flex;
   justify-content: flex-end;
-  flex-wrap: wrap;
+}
+
+.top-controls {
+  display: flex;
   align-items: center;
-  gap: 8px 10px;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
 }
 
-.global-parameter-inline-note {
-  flex-shrink: 0;
-}
-
-.global-parameter-item {
-  min-height: 34px;
+.control-group-inline {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  border-radius: 12px;
-  background: #f8faff;
-  border: 1px solid #dfe7f5;
-  white-space: nowrap;
+  gap: 10px;
+  min-height: 38px;
 }
 
-.global-parameter-label {
-  color: var(--brand-text-normal);
-  font-size: 13px;
+.control-group-analysis {
+  margin-right: 2px;
+}
+
+.top-control-label {
+  flex-shrink: 0;
   font-weight: 600;
+  color: var(--brand-text-normal);
 }
 
 .global-parameter-input {
@@ -2910,6 +2851,7 @@ const detailSearchPlaceholder = computed(() => {
 
 .brand-block {
   align-items: center;
+  flex-shrink: 0;
 }
 
 .brand-icon-wrap {
@@ -2929,49 +2871,78 @@ const detailSearchPlaceholder = computed(() => {
 }
 
 .main-title {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   color: var(--brand-text-strong);
   line-height: 1.2;
 }
 
-.main-subtitle {
-  letter-spacing: 0.5px;
-  font-size: 11px;
-  color: #92a1ba;
-  font-weight: 600;
-}
-
-.top-controls-col {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.top-controls {
-  justify-content: flex-end;
-}
-
 .control-date-inline {
-  width: 312px;
-}
-
-.control-tenant-inline {
-  width: 170px;
+  width: 252px;
 }
 
 .control-org-inline {
-  width: 160px;
+  width: 190px;
+}
+
+.cost-config-trigger {
+  height: 38px;
+  border-radius: 10px;
+  padding: 0 14px;
+  border-color: #d7dfeb;
+  color: var(--brand-text-normal);
+  font-weight: 600;
+}
+
+.cost-config-trigger:hover,
+.cost-config-trigger:focus-visible {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.cost-config-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cost-config-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cost-config-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cost-config-row {
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f8faff;
+  border: 1px solid #dfe7f5;
+}
+
+.cost-config-label {
+  color: var(--brand-text-normal);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .control-date-inline :deep(.el-input__wrapper),
-.control-tenant-inline :deep(.el-input__wrapper),
 .control-org-inline :deep(.el-input__wrapper),
 .source-switch {
   border-radius: 10px;
 }
 
 .control-date-inline :deep(.el-input__wrapper),
-.control-tenant-inline :deep(.el-input__wrapper),
 .control-org-inline :deep(.el-input__wrapper) {
   box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
   border-color: var(--brand-primary) !important;
@@ -2980,36 +2951,23 @@ const detailSearchPlaceholder = computed(() => {
 }
 
 .control-date-inline :deep(.el-input__wrapper:hover),
-.control-tenant-inline :deep(.el-input__wrapper:hover),
 .control-org-inline :deep(.el-input__wrapper:hover),
 .control-date-inline :deep(.el-range-editor:hover),
-.control-tenant-inline :deep(.el-range-editor:hover),
 .control-org-inline :deep(.el-range-editor:hover) {
   box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
   border-color: var(--brand-primary) !important;
 }
 
 .control-date-inline :deep(.el-input__wrapper.is-focus),
-.control-tenant-inline :deep(.el-input__wrapper.is-focus),
 .control-org-inline :deep(.el-input__wrapper.is-focus) {
   box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
   border-color: var(--brand-primary) !important;
 }
 
 .control-date-inline :deep(.el-input__icon),
-.control-tenant-inline :deep(.el-input__icon),
 .control-org-inline :deep(.el-input__icon),
 .control-date-inline :deep(.el-range-separator) {
   color: var(--brand-primary);
-}
-
-.tenant-option-name {
-  float: left;
-  color: var(--brand-text-normal);
-}
-
-.tenant-option-id {
-  float: right;
 }
 
 .source-switch {
@@ -3116,10 +3074,6 @@ const detailSearchPlaceholder = computed(() => {
 
 .analysis-switch-item.is-active {
   color: #ffffff;
-}
-
-.analysis-switch-note {
-  flex-shrink: 0;
 }
 
 .filter-form :deep(.el-form-item) {
@@ -4317,15 +4271,6 @@ const detailSearchPlaceholder = computed(() => {
   --el-color-primary: var(--brand-primary);
 }
 
-:deep(.tenant-select-popper) {
-  --el-color-primary: var(--brand-primary);
-}
-
-:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.is-selected),
-:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.selected) {
-  color: #4f46ff !important;
-}
-
 :deep(.top-filter-popper) {
   --el-color-primary: var(--brand-primary) !important;
 }
@@ -4407,11 +4352,6 @@ const detailSearchPlaceholder = computed(() => {
 :deep(.el-cascader__dropdown .el-radio__input.is-checked + .el-radio__label) {
   color: var(--brand-primary);
   font-weight: 600;
-}
-
-:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item:hover),
-:deep(.tenant-select-popper.el-select-dropdown .el-select-dropdown__item.hover) {
-  background-color: rgba(79, 70, 255, 0.08);
 }
 
 </style>
