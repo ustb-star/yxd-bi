@@ -15,7 +15,7 @@ type TabName = 'conversion' | 'quality' | 'cost';
 type TrendType = 'up' | 'down' | 'neutral';
 type EfficiencyFocus = 'processing-count' | 'processing-duration' | 'labor-cost';
 type TableStateKey = TabName | 'efficiencyCost';
-type FieldRecognitionSortProp = 'idpAccuracy' | 'mailAccuracy';
+type FieldRecognitionSortProp = 'accuracy';
 type FieldRecognitionSortOrder = 'ascending' | 'descending';
 
 type WorkOrderRow = {
@@ -104,8 +104,7 @@ type FieldDetail = {
 
 type FieldRecognitionRow = {
   field: string;
-  idpAccuracy: string;
-  mailAccuracy: string;
+  accuracy: string;
 };
 
 const tabList: Array<{ name: TabName; label: string }> = [
@@ -1030,27 +1029,23 @@ const clampAccuracyValue = (value: number) => Math.max(55, Math.min(99.5, value)
 const parseAccuracyPercent = (value: string) => Number(value.replace('%', '')) || 0;
 
 const rawFieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
-  const idpBase = toQualityPercent(metrics.value.file_recognition_accuracy ?? metrics.value.recognition_accuracy);
-  const mailBase = toQualityPercent(metrics.value.mail_recognition_accuracy ?? metrics.value.recognition_accuracy);
+  const accuracyBase = toQualityPercent(metrics.value.recognition_accuracy);
   const sceneSeed = hashInt(`${startDate.value}|${endDate.value}|${fixedTenantId}|${filters.source}|field-recognition`);
 
   return fieldRecognitionFields.map((field, index) => {
     const seed = sceneSeed + index * 53;
     const difficultyOffset = (pseudoRandom(seed + 11) - 0.5) * 12;
-    const channelGap = (pseudoRandom(seed + 29) - 0.5) * 8;
-    const idpAccuracy = clampAccuracyValue(idpBase + difficultyOffset + channelGap);
-    const mailAccuracy = clampAccuracyValue(mailBase + difficultyOffset - channelGap);
+    const accuracy = clampAccuracyValue(accuracyBase + difficultyOffset);
 
     return {
       field,
-      idpAccuracy: `${idpAccuracy.toFixed(1)}%`,
-      mailAccuracy: `${mailAccuracy.toFixed(1)}%`
+      accuracy: `${accuracy.toFixed(1)}%`
     };
   });
 });
 
 const fieldRecognitionSort = ref<{ prop: FieldRecognitionSortProp; order: FieldRecognitionSortOrder }>({
-  prop: 'idpAccuracy',
+  prop: 'accuracy',
   order: 'descending'
 });
 
@@ -1068,15 +1063,7 @@ const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() =>
   sortFieldRecognitionRows(rawFieldRecognitionRows.value, fieldRecognitionSort.value.prop, fieldRecognitionSort.value.order)
 );
 
-const fieldRecognitionSecondaryLabel = computed(() => {
-  if (filters.source === 'file') return '委托说明';
-  if (filters.source === 'all') return 'MAIL/委托说明';
-  return 'MAIL';
-});
-
-const fieldRecognitionHint = computed(
-  () => `IDP / ${fieldRecognitionSecondaryLabel.value} · 默认按 IDP 准确率倒序`
-);
+const fieldRecognitionHint = '默认按识别准确率倒序';
 
 const handleFieldRecognitionSortChange = ({
   prop,
@@ -1085,7 +1072,7 @@ const handleFieldRecognitionSortChange = ({
   prop: FieldRecognitionSortProp | null;
   order: FieldRecognitionSortOrder | null;
 }) => {
-  if (prop === 'idpAccuracy' || prop === 'mailAccuracy') {
+  if (prop === 'accuracy') {
     fieldRecognitionSort.value = {
       prop,
       order: order ?? 'descending'
@@ -1094,7 +1081,7 @@ const handleFieldRecognitionSortChange = ({
   }
 
   fieldRecognitionSort.value = {
-    prop: 'idpAccuracy',
+    prop: 'accuracy',
     order: 'descending'
   };
 };
@@ -2201,30 +2188,19 @@ const detailSearchPlaceholder = computed(() => {
                         :data="fieldRecognitionRows"
                         class="field-accuracy-table"
                         height="360"
-                        :default-sort="{ prop: 'idpAccuracy', order: 'descending' }"
+                        :default-sort="{ prop: 'accuracy', order: 'descending' }"
                         @sort-change="handleFieldRecognitionSortChange"
                       >
                         <el-table-column prop="field" label="字段名称" min-width="180" />
                         <el-table-column
-                          prop="idpAccuracy"
-                          label="IDP"
+                          prop="accuracy"
+                          label="识别准确率"
                           min-width="120"
                           align="center"
                           sortable="custom"
                         >
                           <template #default="{ row }">
-                            <el-text class="field-accuracy-idp">{{ row.idpAccuracy }}</el-text>
-                          </template>
-                        </el-table-column>
-                        <el-table-column
-                          prop="mailAccuracy"
-                          :label="fieldRecognitionSecondaryLabel"
-                          min-width="120"
-                          align="center"
-                          sortable="custom"
-                        >
-                          <template #default="{ row }">
-                            <el-text class="field-accuracy-mail">{{ row.mailAccuracy }}</el-text>
+                            <el-text class="field-accuracy-rate">{{ row.accuracy }}</el-text>
                           </template>
                         </el-table-column>
                       </el-table>
@@ -2746,16 +2722,27 @@ const detailSearchPlaceholder = computed(() => {
       </el-text>
       <el-table :data="qualityFieldDetails" class="quality-detail-table" height="520">
         <el-table-column prop="field" label="字段" min-width="140" />
-        <el-table-column label="来源" min-width="100">
+        <el-table-column label="原始值" min-width="260">
           <template #default="{ row }">
-            <el-tag effect="light" round size="small" class="quality-source-pill" :style="qualitySourceTagStyle(row.source)">
-              {{ row.source }}
-            </el-tag>
+            <div class="quality-value-cell">
+              <el-tag effect="light" round size="small" class="quality-source-pill" :style="qualitySourceTagStyle(row.source)">
+                {{ row.source }}
+              </el-tag>
+              <span class="quality-value-text">{{ row.rawValue }}</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="rawValue" label="原始值" min-width="240" />
         <el-table-column prop="cleanedValue" label="清洗值" min-width="240" />
-        <el-table-column prop="submittedValue" label="提交值" min-width="240" />
+        <el-table-column label="提交值" min-width="260">
+          <template #default="{ row }">
+            <div class="quality-value-cell">
+              <el-tag effect="light" round size="small" class="quality-source-pill" :style="qualitySourceTagStyle(row.source)">
+                {{ row.source }}
+              </el-tag>
+              <span class="quality-value-text">{{ row.submittedValue }}</span>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
     </el-dialog>
       </div>
@@ -4297,16 +4284,23 @@ const detailSearchPlaceholder = computed(() => {
   overflow-y: auto;
 }
 
-.field-accuracy-idp {
+.field-accuracy-rate {
   color: #4f46ff;
   font-size: 15px;
   font-weight: 700;
 }
 
-.field-accuracy-mail {
-  color: #059669;
-  font-size: 15px;
-  font-weight: 700;
+.quality-value-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+
+.quality-value-text {
+  color: #1f2937;
+  line-height: 1.5;
+  word-break: break-all;
 }
 
 :deep(.el-button--primary) {

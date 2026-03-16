@@ -5,8 +5,7 @@ type AnalysisView = 'workorder' | 'efficiency';
 
 type FieldRecognitionExportRow = {
   field: string;
-  idpAccuracy: string;
-  mailAccuracy: string;
+  accuracy: string;
 };
 
 type DashboardData = {
@@ -55,12 +54,6 @@ const SOURCE_LABEL_MAP: Record<SourceType, string> = {
   all: '全部来源',
   email: '邮件接单',
   file: '文件接单'
-};
-
-const getFieldRecognitionSecondaryLabel = (source: SourceType) => {
-  if (source === 'file') return '委托说明';
-  if (source === 'all') return 'MAIL/委托说明';
-  return 'MAIL';
 };
 
 const toText = (value: unknown) => String(value ?? '');
@@ -337,9 +330,9 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
 
   if (fieldRecognitionRows.length > 0) {
     rows.push(['字段识别准确率（字段维度）']);
-    rows.push(['字段名称', 'IDP', getFieldRecognitionSecondaryLabel(params.source)]);
+    rows.push(['字段名称', '识别准确率']);
     fieldRecognitionRows.forEach((item) => {
-      rows.push([toText(item.field), toText(item.idpAccuracy), toText(item.mailAccuracy)]);
+      rows.push([toText(item.field), toText(item.accuracy)]);
     });
     addBlankRow(rows);
   }
