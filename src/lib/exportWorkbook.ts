@@ -1,6 +1,7 @@
 ﻿import * as XLSX from 'xlsx';
 
 type SourceType = 'all' | 'email' | 'file';
+type AnalysisView = 'workorder' | 'efficiency';
 
 type FieldRecognitionExportRow = {
   field: string;
@@ -30,12 +31,14 @@ type DashboardData = {
     opsDays?: number;
   }>;
   tableData?: Array<Record<string, unknown>>;
+  personTableData?: Array<Record<string, unknown>>;
   totalCSDays?: number;
   totalOpsDays?: number;
   metrics?: Record<string, number>;
 };
 
 type ExportWorkbookParams = {
+  analysisView: AnalysisView;
   source: SourceType;
   tenant: string;
   org: string;
@@ -66,6 +69,7 @@ const clampRatio = (value: number) => Math.max(0, Math.min(1, value));
 const toPercent = (ratio: unknown) => `${(clampRatio(toNumber(ratio)) * 100).toFixed(1)}%`;
 const toMoney = (value: unknown) => `¥${toNumber(value).toFixed(1)}`;
 const toMinutes = (value: unknown) => `${toNumber(value).toFixed(1)}min`;
+const toMinutesWithHours = (value: unknown) => `${toNumber(value).toFixed(1)}min (${(toNumber(value) / 60).toFixed(1)}h)`;
 
 const parsePercentRatio = (value: unknown) => {
   const match = String(value ?? '').match(/-?\d+(?:\.\d+)?/);
@@ -171,7 +175,7 @@ const buildConversionSheet = (params: ExportWorkbookParams) => {
   const details = params.data.tableData ?? [];
   const endDate = params.endDate || params.startDate;
 
-  const stageLabels = ['来源输入', '成功创建工单', '转工作单', '成功提交委托'];
+  const stageLabels = ['来源输入', '成功创建工单', '工作单', '成功提交委托'];
   const reasonLabels = ['接口超时', '文件解析失败'];
   const totalMissed = missed.reduce((sum, item) => sum + toNumber(item?.value), 0);
 
@@ -194,7 +198,7 @@ const buildConversionSheet = (params: ExportWorkbookParams) => {
   addBlankRow(rows);
 
   rows.push(['业务单量', '', '', '', '']);
-  rows.push(['时间', '来源输入', '成功创建工单', '转工作单', '成功提交委托']);
+  rows.push(['时间', '来源输入', '成功创建工单', '工作单', '成功提交委托']);
   const sourceInputTotal = toNumber(funnel[0]?.value);
   const createdTotal = toNumber(funnel[1]?.value);
   const transferredTotal = toNumber(funnel[2]?.value);
@@ -310,9 +314,9 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
 
   // 六芒星按“越大越好”口径导出。
   const dimensions: Array<[string, number]> = [
+    ['字段一次通过率', fieldFirstPassRate],
     ['文件识别准确率', fileRecognitionAccuracy],
     ['邮件识别准确率', mailRecognitionAccuracy],
-    ['字段一次通过率', fieldFirstPassRate],
     ['字段未修改率', 1 - fieldChangeRate],
     ['字段无需补录率', 1 - fieldSupplementRate],
     ['字段保留率', 1 - fieldMissRecallRate]
@@ -330,10 +334,19 @@ const buildQualitySheet = (params: ExportWorkbookParams) => {
   addBlankRow(rows);
 
   if (fieldRecognitionRows.length > 0) {
-    rows.push(['字段识别准确率（字段维度）', '', '']);
-    rows.push(['字段名称', 'IDP', 'MAIL']);
+    const showIdp = params.source !== 'email';
+    const showMail = params.source !== 'file';
+    const header = ['字段名称'];
+    if (showIdp) header.push('IDP');
+    if (showMail) header.push('MAIL');
+
+    rows.push(['字段识别准确率（字段维度）']);
+    rows.push(header);
     fieldRecognitionRows.forEach((item) => {
-      rows.push([toText(item.field), toText(item.idpAccuracy), toText(item.mailAccuracy)]);
+      const row = [toText(item.field)];
+      if (showIdp) row.push(toText(item.idpAccuracy));
+      if (showMail) row.push(toText(item.mailAccuracy));
+      rows.push(row);
     });
     addBlankRow(rows);
   }
@@ -492,6 +505,86 @@ const buildEfficiencyCostSheet = (params: ExportWorkbookParams) => {
   return rows;
 };
 
+const buildEfficiencyPersonSheet = (params: ExportWorkbookParams) => {
+  const rows: unknown[][] = [];
+  const metrics = params.data.metrics ?? {};
+  const endDate = params.endDate || params.startDate;
+  const details = [...(params.data.personTableData ?? [])].sort(
+    (left, right) => toNumber(right.processingCount) - toNumber(left.processingCount)
+  );
+
+  const workOrderSubmitVolume = toNumber(metrics.work_order_submit_volume);
+  const participantCount = toNumber(metrics.participant_user_count);
+  const avgInputMinutes = toNumber(metrics.avg_efficiency_input_duration_per_person);
+  const avgLaborCost = toNumber(metrics.avg_efficiency_labor_cost_per_person);
+  const totalSavedCost = details.reduce((sum, item) => {
+    const processingCount = toNumber(item.processingCount);
+    const avgProofreading = toNumber(item.avgProofreadingMinutes);
+    const avgAudit = toNumber(item.avgAuditMinutes);
+    const savedProofreading =
+      avgProofreading > 0
+        ? ((params.originalProofreadingMinutes - avgProofreading) * processingCount * params.csRate) / 480
+        : 0;
+    const savedAudit =
+      avgAudit > 0
+        ? ((params.originalAuditMinutes - avgAudit) * processingCount * params.opsRate) / 480
+        : 0;
+    return sum + savedProofreading + savedAudit;
+  }, 0);
+
+  addSummaryTitle(rows);
+  rows.push(['来源', SOURCE_LABEL_MAP[params.source]]);
+  rows.push(['租户', toText(params.tenant)]);
+  rows.push(['部门/个人', toText(params.org)]);
+  rows.push(['时间', `${params.startDate}~${endDate}`]);
+  addBlankRow(rows);
+
+  rows.push(['指标', '值']);
+  rows.push(['参与处理人数', participantCount]);
+  rows.push(['工作单提交量', workOrderSubmitVolume]);
+  rows.push(['处理单量', workOrderSubmitVolume]);
+  rows.push(['平均投入时长', toMinutes(avgInputMinutes)]);
+  rows.push(['平均人力成本', toMoney(avgLaborCost)]);
+  rows.push(['节省总成本', toMoney(totalSavedCost)]);
+  addBlankRow(rows);
+
+  addDetailTitle(rows);
+  rows.push([
+    '人员',
+    '业务部门（分公司）',
+    '处理单量',
+    '平均投入时长',
+    '投入总时长',
+    '时长成本',
+    '节省成本'
+  ]);
+
+  details.forEach((item) => {
+    const processingCount = toNumber(item.processingCount);
+    const avgProofreading = toNumber(item.avgProofreadingMinutes);
+    const avgAudit = toNumber(item.avgAuditMinutes);
+    const savedCost =
+      (avgProofreading > 0
+        ? ((params.originalProofreadingMinutes - avgProofreading) * processingCount * params.csRate) / 480
+        : 0) +
+      (avgAudit > 0
+        ? ((params.originalAuditMinutes - avgAudit) * processingCount * params.opsRate) / 480
+        : 0);
+
+    rows.push([
+      toText(item.person),
+      toText(item.department),
+      processingCount,
+      toMinutesWithHours(item.avgProcessingMinutes),
+      toMinutesWithHours(item.totalProcessingMinutes),
+      toMoney(item.processingCostValue),
+      toMoney(savedCost)
+    ]);
+  });
+
+  return rows;
+};
+
 const createSheet = (rows: unknown[][]) => {
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   const colCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
@@ -568,20 +661,27 @@ export const exportDashboardWorkbook = async (params: ExportWorkbookParams) => {
   const tenantLabel = toText(params.tenant);
   const orgLabel = toText(params.org);
   const endDate = params.endDate || params.startDate;
-  const timeLabel = params.startDate === endDate ? params.startDate : `${params.startDate}_${endDate}`;
+  const compactStartDate = params.startDate.replace(/-/g, '');
+  const compactEndDate = endDate.replace(/-/g, '');
+  const timeLabel = compactStartDate === compactEndDate ? compactStartDate : `${compactStartDate}~${compactEndDate}`;
+  const filenamePrefix = params.analysisView === 'efficiency' ? '人效分析' : '工作单分析';
 
   const workbook = XLSX.utils.book_new();
 
-  XLSX.utils.book_append_sheet(workbook, createSheet(buildConversionSheet(params)), '转化分析');
-  XLSX.utils.book_append_sheet(workbook, createSheet(buildQualitySheet(params)), '数据质量分析');
-  XLSX.utils.book_append_sheet(workbook, createSheet(buildEfficiencyCostSheet(params)), '效率成本分析');
+  if (params.analysisView === 'efficiency') {
+    XLSX.utils.book_append_sheet(workbook, createSheet(buildEfficiencyPersonSheet(params)), '人效分析');
+  } else {
+    XLSX.utils.book_append_sheet(workbook, createSheet(buildConversionSheet(params)), '转化分析');
+    XLSX.utils.book_append_sheet(workbook, createSheet(buildQualitySheet(params)), '数据质量分析');
+    XLSX.utils.book_append_sheet(workbook, createSheet(buildEfficiencyCostSheet(params)), '效率成本分析');
+  }
 
   const buffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
   const blob = new Blob([buffer], {
     type: EXCEL_MIME_TYPE
   });
 
-  const filename = `${safeNamePart(timeLabel)}-${safeNamePart(tenantLabel)}-${safeNamePart(orgLabel)}-${safeNamePart(sourceLabel)}.xlsx`;
+  const filename = `${safeNamePart(filenamePrefix)}-${safeNamePart(sourceLabel)}-${safeNamePart(tenantLabel)}-${safeNamePart(orgLabel)}-${safeNamePart(timeLabel)}.xlsx`;
 
   if (!(await saveBlobWithPicker(blob, filename))) {
     downloadBlobByLink(blob, filename);

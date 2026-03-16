@@ -35,13 +35,13 @@ const TENANT_PROFILES: TenantProfile[] = [
       {
         role: 'followers',
         name: '客服一部',
-        members: ['陈雨', '王倩'],
+        members: ['陈雨', '王倩', '李雯', '赵晴', '吴悠', '许婷', '郭琳', '林悦'],
         aliases: ['出口业务部', '客服部', '跟进组']
       },
       {
         role: 'reviewers',
         name: '操作一部',
-        members: ['周凯', '孙宁'],
+        members: ['周凯', '孙宁', '陆川', '谢航', '程皓', '韩松', '彭越', '戴晨'],
         aliases: ['订舱操作部', '操作部', '审核组']
       }
     ]
@@ -56,13 +56,13 @@ const TENANT_PROFILES: TenantProfile[] = [
       {
         role: 'followers',
         name: '国际客服部',
-        members: ['何敏', '赵洁'],
+        members: ['何敏', '赵洁', '顾岚', '袁茜', '丁璇', '沈宁', '叶菲', '苏禾'],
         aliases: ['出口业务部', '客服部']
       },
       {
         role: 'reviewers',
         name: '订舱执行部',
-        members: ['蒋帆', '林越'],
+        members: ['蒋帆', '林越', '邵诚', '章尧', '傅璟', '高恺', '顾铭', '余峥'],
         aliases: ['订舱操作部', '操作部']
       }
     ]
@@ -77,13 +77,13 @@ const TENANT_PROFILES: TenantProfile[] = [
       {
         role: 'followers',
         name: '跟单中心',
-        members: ['高翔', '郑彤'],
+        members: ['高翔', '郑彤', '季珊', '曹颖', '魏宁', '江雪', '徐蔚', '严琪'],
         aliases: ['出口业务部', '客服部']
       },
       {
         role: 'reviewers',
         name: '舱位操作组',
-        members: ['韩涛', '马会'],
+        members: ['韩涛', '马会', '常峻', '潘骁', '杜衡', '梁琛', '贺霖', '石湛'],
         aliases: ['订舱操作部', '操作部']
       }
     ]
@@ -98,13 +98,13 @@ const TENANT_PROFILES: TenantProfile[] = [
       {
         role: 'followers',
         name: '客服运营部',
-        members: ['罗阳', '谢妍'],
+        members: ['罗阳', '谢妍', '温岚', '周朵', '孟清', '宋悦', '乔宁', '陈菲'],
         aliases: ['出口业务部', '客服部']
       },
       {
         role: 'reviewers',
         name: '审核操作部',
-        members: ['唐骏', '彭程'],
+        members: ['唐骏', '彭程', '顾尧', '袁拓', '方洲', '任骁', '梁策', '邱原'],
         aliases: ['订舱操作部', '操作部']
       }
     ]

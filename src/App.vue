@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { ElMessage } from 'element-plus';
 import { Document, Download, Filter, Search, View } from '@element-plus/icons-vue';
 import type { EChartsOption } from 'echarts';
 import * as XLSX from 'xlsx';
@@ -9,8 +10,11 @@ import { TENANT_OPTIONS, type OrgTreeNode } from './lib/tenantProfiles';
 import EChart from './components/charts/EChart.vue';
 
 type SourceFilter = 'all' | 'email' | 'file';
+type AnalysisView = 'workorder' | 'efficiency';
 type TabName = 'conversion' | 'quality' | 'cost';
 type TrendType = 'up' | 'down' | 'neutral';
+type EfficiencyFocus = 'processing-count' | 'processing-duration' | 'labor-cost';
+type TableStateKey = TabName | 'efficiencyCost';
 
 type WorkOrderRow = {
   orderId: string;
@@ -37,6 +41,34 @@ type WorkOrderRow = {
   proofreadingCost: string;
   auditCost: string;
   processingCost: string;
+};
+
+type EfficiencyPersonRow = {
+  person: string;
+  department: string;
+  processingCount: number;
+  avgProcessingMinutes: number;
+  avgProofreadingMinutes: number;
+  avgAuditMinutes: number;
+  totalProcessingMinutes: number;
+  processingCostValue: number;
+  reworkCount: number;
+};
+
+type EfficiencyPersonCostBarDatum = {
+  value: number;
+  person: string;
+  department: string;
+  processingCount: number;
+  avgProcessingMinutes: number;
+  processingCost: number;
+  itemStyle?: {
+    color?: string;
+    borderColor?: string;
+    borderWidth?: number;
+    shadowBlur?: number;
+    shadowColor?: string;
+  };
 };
 
 type TableState = {
@@ -77,7 +109,12 @@ type FieldRecognitionRow = {
 const tabList: Array<{ name: TabName; label: string }> = [
   { name: 'conversion', label: '转化分析' },
   { name: 'quality', label: '数据质量分析' },
-  { name: 'cost', label: '成本分析' }
+  { name: 'cost', label: '效率成本分析' }
+];
+
+const analysisViewOptions: Array<{ value: AnalysisView; label: string }> = [
+  { value: 'workorder', label: '工作单维度' },
+  { value: 'efficiency', label: '人效维度' }
 ];
 
 const sourceOptions = [
@@ -242,7 +279,7 @@ const fieldMockValueMap: Record<string, string> = {
 const filters = reactive({
   tenantId: defaultTenantId,
   org: '全公司',
-  source: 'email' as SourceFilter
+  source: 'all' as SourceFilter
 });
 
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1440);
@@ -266,6 +303,11 @@ const sourceSwitchIndex = computed(() => {
   return index >= 0 ? index : 0;
 });
 
+const analysisSwitchIndex = computed(() => {
+  const index = analysisViewOptions.findIndex((item) => item.value === activeAnalysisView.value);
+  return index >= 0 ? index : 0;
+});
+
 const tenantKeyword = ref('');
 const filteredTenantOptions = computed(() => {
   const query = tenantKeyword.value.trim().toLowerCase();
@@ -277,9 +319,20 @@ const filteredTenantOptions = computed(() => {
   });
 });
 
-const orgTree = computed<OrgTreeNode[]>(() => {
+const fullOrgTree = computed<OrgTreeNode[]>(() => {
   const tenant = tenantOptions.find((item) => item.id === filters.tenantId);
   return tenant?.orgTree || tenantOptions[0]?.orgTree || [{ value: '全公司', label: '全公司' }];
+});
+
+const orgTree = computed<OrgTreeNode[]>(() => {
+  if (activeAnalysisView.value === 'efficiency') {
+    return fullOrgTree.value;
+  }
+
+  return fullOrgTree.value.map((node) => ({
+    value: node.value,
+    label: node.label
+  }));
 });
 
 const selectedTenantName = computed(
@@ -313,16 +366,6 @@ const orgProps = {
   emitPath: true
 };
 
-const dateRange = ref<[string, string]>(['2025-12-02', '2026-03-02']);
-const csRate = ref(200);
-const opsRate = ref(300);
-const originalProofreadingMinutes = ref(10);
-const originalAuditMinutes = ref(5);
-const exporting = ref(false);
-const activeTab = ref<TabName>('conversion');
-const isSwitching = ref(false);
-let switchingTimer: number | null = null;
-
 const TOP_FILTER_STORAGE_KEY = 'yxd-bi-top-filters-v1';
 
 type PersistedTopFilters = {
@@ -330,56 +373,109 @@ type PersistedTopFilters = {
   tenantId?: string;
   orgPath?: string[];
   source?: SourceFilter;
+  analysisView?: AnalysisView;
   activeTab?: TabName;
+  csRate?: number;
+  opsRate?: number;
+  originalProofreadingMinutes?: number;
+  originalAuditMinutes?: number;
 };
+
+const readPersistedTopFilters = (): PersistedTopFilters | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(TOP_FILTER_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as PersistedTopFilters;
+  } catch {
+    return null;
+  }
+};
+
+const initialPersistedTopFilters = readPersistedTopFilters();
+const initialAnalysisView: AnalysisView =
+  initialPersistedTopFilters?.analysisView === 'efficiency' ? 'efficiency' : 'workorder';
+const initialActiveTab: TabName =
+  initialPersistedTopFilters?.activeTab === 'quality' || initialPersistedTopFilters?.activeTab === 'cost'
+    ? initialPersistedTopFilters.activeTab
+    : 'conversion';
+
+const dateRange = ref<[string, string]>(['2025-12-02', '2026-03-02']);
+const csRate = ref(200);
+const opsRate = ref(300);
+const originalProofreadingMinutes = ref(10);
+const originalAuditMinutes = ref(5);
+const exporting = ref(false);
+const activeAnalysisView = ref<AnalysisView>(initialAnalysisView);
+const activeTab = ref<TabName>(initialActiveTab);
+const lastWorkOrderTab = ref<TabName>('conversion');
+const activeEfficiencyFocus = ref<EfficiencyFocus>('processing-count');
+const isSwitching = ref(false);
+let switchingTimer: number | null = null;
 
 const isDateText = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 const isSourceFilter = (value: unknown): value is SourceFilter => value === 'all' || value === 'email' || value === 'file';
 const isTenantId = (value: unknown): value is string => typeof value === 'string' && tenantIdSet.has(value);
+const isAnalysisView = (value: unknown): value is AnalysisView => value === 'workorder' || value === 'efficiency';
 const isTabName = (value: unknown): value is TabName => value === 'conversion' || value === 'quality' || value === 'cost';
+const isNonNegativeFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
 const restoreTopFilters = () => {
-  if (typeof window === 'undefined') return;
-  try {
-    const raw = window.localStorage.getItem(TOP_FILTER_STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as PersistedTopFilters;
+  const parsed = readPersistedTopFilters();
+  if (!parsed) return;
 
-    if (
-      Array.isArray(parsed.dateRange) &&
-      parsed.dateRange.length === 2 &&
-      isDateText(parsed.dateRange[0]) &&
-      isDateText(parsed.dateRange[1])
-    ) {
-      dateRange.value = [parsed.dateRange[0], parsed.dateRange[1]];
-    }
+  if (
+    Array.isArray(parsed.dateRange) &&
+    parsed.dateRange.length === 2 &&
+    isDateText(parsed.dateRange[0]) &&
+    isDateText(parsed.dateRange[1])
+  ) {
+    dateRange.value = [parsed.dateRange[0], parsed.dateRange[1]];
+  }
 
-    if (isTenantId(parsed.tenantId)) {
-      filters.tenantId = parsed.tenantId;
-    }
+  if (isTenantId(parsed.tenantId)) {
+    filters.tenantId = parsed.tenantId;
+  }
 
-    if (
-      Array.isArray(parsed.orgPath) &&
-      parsed.orgPath.length > 0 &&
-      parsed.orgPath.every((item) => typeof item === 'string' && item.trim().length > 0) &&
-      isOrgPathValid(parsed.orgPath, orgTree.value)
-    ) {
-      orgPath.value = [...parsed.orgPath];
-      filters.org = parsed.orgPath[parsed.orgPath.length - 1] || '全公司';
-    } else {
-      orgPath.value = ['全公司'];
-      filters.org = '全公司';
-    }
+  if (isSourceFilter(parsed.source)) {
+    filters.source = parsed.source;
+  }
 
-    if (isSourceFilter(parsed.source)) {
-      filters.source = parsed.source;
-    }
+  if (isAnalysisView(parsed.analysisView)) {
+    activeAnalysisView.value = parsed.analysisView;
+  }
 
-    if (isTabName(parsed.activeTab)) {
-      activeTab.value = parsed.activeTab;
-    }
-  } catch {
-    // Ignore invalid local storage payloads.
+  if (isTabName(parsed.activeTab)) {
+    activeTab.value = parsed.activeTab;
+  }
+
+  if (isNonNegativeFiniteNumber(parsed.csRate)) {
+    csRate.value = parsed.csRate;
+  }
+
+  if (isNonNegativeFiniteNumber(parsed.opsRate)) {
+    opsRate.value = parsed.opsRate;
+  }
+
+  if (isNonNegativeFiniteNumber(parsed.originalProofreadingMinutes)) {
+    originalProofreadingMinutes.value = parsed.originalProofreadingMinutes;
+  }
+
+  if (isNonNegativeFiniteNumber(parsed.originalAuditMinutes)) {
+    originalAuditMinutes.value = parsed.originalAuditMinutes;
+  }
+
+  if (
+    Array.isArray(parsed.orgPath) &&
+    parsed.orgPath.length > 0 &&
+    parsed.orgPath.every((item) => typeof item === 'string' && item.trim().length > 0) &&
+    isOrgPathValid(parsed.orgPath, orgTree.value)
+  ) {
+    orgPath.value = [...parsed.orgPath];
+    filters.org = parsed.orgPath[parsed.orgPath.length - 1] || '全公司';
+  } else {
+    orgPath.value = ['全公司'];
+    filters.org = '全公司';
   }
 };
 
@@ -390,7 +486,12 @@ const persistTopFilters = () => {
     tenantId: filters.tenantId,
     orgPath: orgPath.value.length ? [...orgPath.value] : ['全公司'],
     source: filters.source,
-    activeTab: activeTab.value
+    analysisView: activeAnalysisView.value,
+    activeTab: activeTab.value,
+    csRate: csRate.value,
+    opsRate: opsRate.value,
+    originalProofreadingMinutes: originalProofreadingMinutes.value,
+    originalAuditMinutes: originalAuditMinutes.value
   };
   try {
     window.localStorage.setItem(TOP_FILTER_STORAGE_KEY, JSON.stringify(payload));
@@ -491,7 +592,21 @@ const allRows = computed<WorkOrderRow[]>(() =>
   (dashboardData.value.tableData || []).map((item) => toRow(item as Record<string, unknown>))
 );
 
-const activeModuleRows = computed<WorkOrderRow[]>(() => {
+const personRows = computed<EfficiencyPersonRow[]>(() =>
+  ((dashboardData.value.personTableData || []) as Array<Record<string, unknown>>).map((item) => ({
+    person: normalizeText(item.person ?? '-'),
+    department: normalizeText(item.department ?? '-'),
+    processingCount: Number(item.processingCount ?? 0),
+    avgProcessingMinutes: Number(item.avgProcessingMinutes ?? 0),
+    avgProofreadingMinutes: Number(item.avgProofreadingMinutes ?? 0),
+    avgAuditMinutes: Number(item.avgAuditMinutes ?? 0),
+    totalProcessingMinutes: Number(item.totalProcessingMinutes ?? 0),
+    processingCostValue: Number(item.processingCostValue ?? 0),
+    reworkCount: Number(item.reworkCount ?? 0)
+  }))
+);
+
+const workOrderModuleRows = computed<WorkOrderRow[]>(() => {
   if (activeTab.value === 'conversion') return allRows.value;
   return allRows.value
     .filter((row) => row.status.includes('成功') && row.orderId !== '-' && row.workOrderId !== '-')
@@ -502,15 +617,28 @@ const activeModuleRows = computed<WorkOrderRow[]>(() => {
     });
 });
 
-const tableStates = reactive<Record<TabName, TableState>>({
+const availableTabs = computed<TabName[]>(() =>
+  activeAnalysisView.value === 'efficiency' ? ['cost'] : tabList.map((item) => item.name)
+);
+
+const currentTableStateKey = computed<TableStateKey>(() =>
+  activeAnalysisView.value === 'efficiency' ? 'efficiencyCost' : activeTab.value
+);
+
+const detailRows = computed<Array<WorkOrderRow | EfficiencyPersonRow>>(() =>
+  activeAnalysisView.value === 'efficiency' ? personRows.value : workOrderModuleRows.value
+);
+
+const tableStates = reactive<Record<TableStateKey, TableState>>({
   conversion: { keyword: '', page: 1, pageSize: 20 },
   quality: { keyword: '', page: 1, pageSize: 20 },
-  cost: { keyword: '', page: 1, pageSize: 20 }
+  cost: { keyword: '', page: 1, pageSize: 20 },
+  efficiencyCost: { keyword: '', page: 1, pageSize: 20 }
 });
 
 const pageSizes = [10, 20, 50, 100];
 
-for (const tab of tabList.map((item) => item.name)) {
+for (const tab of ['conversion', 'quality', 'cost', 'efficiencyCost'] as TableStateKey[]) {
   watch(
     () => [tableStates[tab].keyword, tableStates[tab].pageSize],
     () => {
@@ -522,26 +650,36 @@ for (const tab of tabList.map((item) => item.name)) {
 const normalizeSearchText = (value: string) =>
   value
     .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 65248))
-    .replace(/工单ID|工作单ID|来源ID|工单|工作单|order|work|source|id|：|:/gi, ' ')
+    .replace(/工单ID|工作单ID|来源ID|工单|工作单|order|work|source|id|人员|部门|组织|：|:/gi, ' ')
     .trim()
     .toLowerCase();
 
-const currentTableState = computed(() => tableStates[activeTab.value]);
+const currentTableState = computed(() => tableStates[currentTableStateKey.value]);
 
 const currentKeyword = computed({
   get: () => currentTableState.value.keyword,
   set: (value: string) => {
-    tableStates[activeTab.value].keyword = value;
+    tableStates[currentTableStateKey.value].keyword = value;
   }
 });
 
 const filteredRows = computed(() => {
   const query = normalizeSearchText(currentTableState.value.keyword);
-  if (!query) return activeModuleRows.value;
+  if (!query) return detailRows.value;
   const tokens = query.split(/[\s,，;；]+/).filter(Boolean);
-  if (tokens.length === 0) return activeModuleRows.value;
+  if (tokens.length === 0) return detailRows.value;
 
-  return activeModuleRows.value.filter((row) =>
+  if (activeAnalysisView.value === 'efficiency') {
+    return personRows.value.filter((row) =>
+      tokens.some(
+        (token) =>
+          row.person.toLowerCase().includes(token) ||
+          row.department.toLowerCase().includes(token)
+      )
+    );
+  }
+
+  return workOrderModuleRows.value.filter((row) =>
     tokens.some(
       (token) =>
         row.orderId.toLowerCase().includes(token) ||
@@ -565,11 +703,11 @@ const pagedRows = computed(() => {
 });
 
 const updateCurrentPage = (page: number) => {
-  tableStates[activeTab.value].page = page;
+  tableStates[currentTableStateKey.value].page = page;
 };
 
 const updateCurrentPageSize = (size: number) => {
-  tableStates[activeTab.value].pageSize = size;
+  tableStates[currentTableStateKey.value].pageSize = size;
 };
 
 const metrics = computed(() => dashboardData.value.metrics || {});
@@ -634,42 +772,96 @@ const calcSavedCostByMetrics = (m: Record<string, number | undefined>) => {
 
 const totalSavedCost = computed(() => calcSavedCostByMetrics(metrics.value));
 
-const savedCostMom = computed(() => {
+const previousDashboardData = computed(() => {
   const start = parseDateText(startDate.value);
   const end = parseDateText(endDate.value);
   const periodDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1);
   const previousStart = shiftDateText(startDate.value, -periodDays);
   const previousEnd = shiftDateText(startDate.value, -1);
-  const previousData = getDynamicData(
-    previousStart,
-    previousEnd,
-    filters.org,
-    filters.source,
-    csRate.value,
-    opsRate.value,
-    filters.tenantId,
-    { disableComparison: true }
-  );
-  const previousSavedCost = calcSavedCostByMetrics((previousData.metrics || {}) as Record<string, number | undefined>);
+  return getDynamicData(previousStart, previousEnd, filters.org, filters.source, csRate.value, opsRate.value, filters.tenantId, {
+    disableComparison: true
+  });
+});
+
+const previousMetrics = computed(() => previousDashboardData.value.metrics || {});
+
+const savedCostMom = computed(() => {
+  const previousSavedCost = calcSavedCostByMetrics(previousMetrics.value as Record<string, number | undefined>);
   return calcMom(totalSavedCost.value, previousSavedCost);
 });
 
+const fieldFirstPassRate = computed(() => Number(metrics.value.field_first_pass_rate || 0));
+const fieldFirstPassRateMom = computed(() =>
+  calcMom(fieldFirstPassRate.value, Number(previousMetrics.value.field_first_pass_rate || 0))
+);
+const efficiencyProcessingCount = computed(() => Number(metrics.value.work_order_submit_volume || 0));
+const efficiencyProcessingCountMom = computed(() =>
+  calcMom(
+    efficiencyProcessingCount.value,
+    Number(previousMetrics.value.work_order_submit_volume || 0)
+  )
+);
+const avgEfficiencyLaborCost = computed(() => Number(metrics.value.avg_efficiency_labor_cost_per_person || 0));
+const avgEfficiencyLaborCostMom = computed(() =>
+  calcMom(avgEfficiencyLaborCost.value, Number(previousMetrics.value.avg_efficiency_labor_cost_per_person || 0))
+);
+const avgEfficiencyInputMinutes = computed(() => Number(metrics.value.avg_efficiency_input_duration_per_person || 0));
+const avgEfficiencyInputMinutesMom = computed(() =>
+  calcMom(
+    avgEfficiencyInputMinutes.value,
+    Number(previousMetrics.value.avg_efficiency_input_duration_per_person || 0)
+  )
+);
+
 const kpis = computed(() => {
-  const m = metrics.value;
-  const trends = (dashboardData.value.kpis || []) as Array<{ trend?: TrendType; percentage?: string }>;
+  if (activeAnalysisView.value === 'efficiency') {
+    return [
+      {
+        label: '处理单量',
+        value: efficiencyProcessingCount.value.toLocaleString(),
+        trend: efficiencyProcessingCountMom.value.trend,
+        mom: efficiencyProcessingCountMom.value.percentage,
+        tab: 'cost' as TabName,
+        focus: 'processing-count' as EfficiencyFocus
+      },
+      {
+        label: '平均投入时长',
+        value: `${avgEfficiencyInputMinutes.value.toFixed(1)}min`,
+        trend: avgEfficiencyInputMinutesMom.value.trend,
+        mom: avgEfficiencyInputMinutesMom.value.percentage,
+        tab: 'cost' as TabName,
+        focus: 'processing-duration' as EfficiencyFocus
+      },
+      {
+        label: '平均人力成本',
+        value: `¥${avgEfficiencyLaborCost.value.toFixed(1)}`,
+        trend: avgEfficiencyLaborCostMom.value.trend,
+        mom: avgEfficiencyLaborCostMom.value.percentage,
+        tab: 'cost' as TabName,
+        focus: 'labor-cost' as EfficiencyFocus
+      }
+    ];
+  }
+
   return [
     {
       label: '工作单提交量',
-      value: Number(m.work_order_submit_volume || 0).toLocaleString(),
-      trend: trends[0]?.trend || 'neutral',
-      mom: trends[0]?.percentage || '0.0%',
+      value: Number(metrics.value.work_order_submit_volume || 0).toLocaleString(),
+      trend: calcMom(
+        Number(metrics.value.work_order_submit_volume || 0),
+        Number(previousMetrics.value.work_order_submit_volume || 0)
+      ).trend,
+      mom: calcMom(
+        Number(metrics.value.work_order_submit_volume || 0),
+        Number(previousMetrics.value.work_order_submit_volume || 0)
+      ).percentage,
       tab: 'conversion' as TabName
     },
     {
       label: '字段一次通过率',
-      value: toPercent(m.field_first_pass_rate),
-      trend: trends[2]?.trend || 'neutral',
-      mom: trends[2]?.percentage || '0.0%',
+      value: toPercent(fieldFirstPassRate.value),
+      trend: fieldFirstPassRateMom.value.trend,
+      mom: fieldFirstPassRateMom.value.percentage,
       tab: 'quality' as TabName
     },
     {
@@ -689,7 +881,7 @@ const kpiColSpan = computed(() => {
 const trendType = (trend: TrendType) => (trend === 'up' ? 'success' : trend === 'down' ? 'danger' : 'info');
 const trendLabel = (trend: TrendType) => (trend === 'up' ? '上升' : trend === 'down' ? '下降' : '持平');
 
-const funnelStageLabels = ['来源输入', '成功创建工单', '转工作单', '成功提交委托'];
+const funnelStageLabels = ['来源输入', '成功创建工单', '工作单', '成功提交委托'];
 const missReasonLabels = ['接口超时', '文件解析失败'];
 const missReasonColors = ['#ef4444', '#6366f1'];
 
@@ -870,6 +1062,14 @@ const fieldRecognitionRows = computed<FieldRecognitionRow[]>(() => {
   });
 });
 
+const showFieldIdpColumn = computed(() => filters.source !== 'email');
+const showFieldMailColumn = computed(() => filters.source !== 'file');
+const fieldRecognitionHint = computed(() => {
+  if (showFieldIdpColumn.value && showFieldMailColumn.value) return 'IDP / MAIL';
+  if (showFieldIdpColumn.value) return '仅展示 IDP';
+  return '仅展示 MAIL';
+});
+
 const savedCostTrendRows = computed(() =>
   efficiencyRows.value.map((row) => {
     const volume = Number(row.submissions || 0);
@@ -887,6 +1087,46 @@ const savedCostTrendRows = computed(() =>
     };
   })
 );
+
+const participantCount = computed(() => Number(metrics.value.participant_user_count || personRows.value.length || 0));
+
+const personRankingRows = computed(() =>
+  [...personRows.value]
+    .sort((left, right) => right.processingCount - left.processingCount)
+    .slice(0, 12)
+);
+
+const personDurationRows = computed(() =>
+  [...personRows.value]
+    .sort((left, right) => right.avgProcessingMinutes - left.avgProcessingMinutes)
+    .slice(0, 12)
+);
+
+const personLaborCostRows = computed(() =>
+  [...personRows.value]
+    .map((item) => ({
+      person: item.person,
+      department: item.department,
+      processingCount: item.processingCount,
+      avgProcessingMinutes: item.avgProcessingMinutes,
+      processingCostValue: item.processingCostValue,
+      avgLaborCost: item.processingCount > 0 ? item.processingCostValue / item.processingCount : 0
+    }))
+    .sort((left, right) => right.avgLaborCost - left.avgLaborCost)
+    .slice(0, 12)
+);
+
+const getSavedCostForPersonRow = (row: EfficiencyPersonRow) => {
+  const savedProofreadingCost =
+    row.avgProofreadingMinutes > 0
+      ? ((originalProofreadingMinutes.value - row.avgProofreadingMinutes) * row.processingCount * csRate.value) / 480
+      : 0;
+  const savedAuditCost =
+    row.avgAuditMinutes > 0
+      ? ((originalAuditMinutes.value - row.avgAuditMinutes) * row.processingCount * opsRate.value) / 480
+      : 0;
+  return savedProofreadingCost + savedAuditCost;
+};
 
 const conversionTrendOption = computed<EChartsOption>(() => {
   const labels = conversionTimelineRows.value.map((item) => item.name);
@@ -934,7 +1174,7 @@ const conversionTrendOption = computed<EChartsOption>(() => {
         data: conversionTimelineRows.value.map((item) => item.created)
       },
       {
-        name: '转工作单',
+        name: '工作单',
         type: 'line',
         smooth: true,
         symbol: 'circle',
@@ -1148,6 +1388,124 @@ const costTrendOption = computed<EChartsOption>(() => ({
   ]
 }));
 
+const efficiencyPersonRankingOption = computed<EChartsOption>(() => ({
+  color: ['#4f46ff'],
+  grid: { left: 18, right: 18, top: 24, bottom: 24, containLabel: true },
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+  xAxis: {
+    type: 'value',
+    axisLabel: { color: '#909399', fontSize: 11 },
+    splitLine: { lineStyle: { color: '#eef1f6' } }
+  },
+  yAxis: {
+    type: 'category',
+    data: personRankingRows.value.map((item) => item.person),
+    axisTick: { show: false },
+    axisLine: { lineStyle: { color: '#e5e7eb' } },
+    axisLabel: { color: '#909399', fontSize: 11 }
+  },
+  series: [
+    {
+      name: '处理单量',
+      type: 'bar',
+      barWidth: 16,
+      data: personRankingRows.value.map((item) => item.processingCount),
+      label: { show: true, position: 'right', color: '#4f46ff' }
+    }
+  ]
+}));
+
+const efficiencyPersonDurationOption = computed<EChartsOption>(() => ({
+  color: ['#0ea5e9'],
+  grid: { left: 18, right: 18, top: 24, bottom: 24, containLabel: true },
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+  xAxis: {
+    type: 'value',
+    axisLabel: { color: '#909399', fontSize: 11, formatter: '{value} min' },
+    splitLine: { lineStyle: { color: '#eef1f6' } }
+  },
+  yAxis: {
+    type: 'category',
+    data: personDurationRows.value.map((item) => item.person),
+    axisTick: { show: false },
+    axisLine: { lineStyle: { color: '#e5e7eb' } },
+    axisLabel: { color: '#909399', fontSize: 11 }
+  },
+  series: [
+    {
+      name: '平均投入时长',
+      type: 'bar',
+      barWidth: 16,
+      data: personDurationRows.value.map((item) => Number(item.avgProcessingMinutes.toFixed(1))),
+      label: { show: true, position: 'right', color: '#0ea5e9', formatter: '{c}min' }
+    }
+  ]
+}));
+
+const efficiencyPersonCostOption = computed<EChartsOption>(() => ({
+  color: ['#f59e0b'],
+  grid: { left: 18, right: 18, top: 24, bottom: 24, containLabel: true },
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'shadow' },
+    formatter: (params: Array<{ data?: EfficiencyPersonCostBarDatum }>) => {
+      const point = params?.[0]?.data as EfficiencyPersonCostBarDatum | undefined;
+      if (!point) return '-';
+      return `${point.person} / ${point.department}<br/>平均人力成本：¥${point.value.toFixed(1)} / 单<br/>处理单量：${point.processingCount}<br/>平均投入时长：${point.avgProcessingMinutes.toFixed(1)}min<br/>总处理成本：¥${point.processingCost.toFixed(1)}`;
+    }
+  },
+  xAxis: {
+    type: 'value',
+    name: '平均人力成本(¥/单)',
+    nameTextStyle: { color: '#909399', fontSize: 11 },
+    axisLabel: { color: '#909399', fontSize: 11, formatter: '¥{value}' },
+    splitLine: { lineStyle: { color: '#eef1f6' } }
+  },
+  yAxis: {
+    type: 'category',
+    data: personLaborCostRows.value.map((item) => item.person),
+    axisTick: { show: false },
+    axisLine: { lineStyle: { color: '#e5e7eb' } },
+    axisLabel: { color: '#909399', fontSize: 11 }
+  },
+  series: [
+    {
+      name: '人员',
+      type: 'bar',
+      barWidth: 16,
+      data: personLaborCostRows.value.map(
+        (item) =>
+          ({
+            value: Number(item.avgLaborCost.toFixed(1)),
+            person: item.person,
+            department: item.department,
+            processingCount: item.processingCount,
+            avgProcessingMinutes: Number(item.avgProcessingMinutes.toFixed(1)),
+            processingCost: Number(item.processingCostValue.toFixed(1)),
+            itemStyle: {
+              borderRadius: [0, 8, 8, 0]
+            }
+          }) satisfies EfficiencyPersonCostBarDatum
+      ),
+      emphasis: {
+        focus: 'series',
+        itemStyle: {
+          color: '#f97316',
+          shadowBlur: 18,
+          shadowColor: 'rgba(124, 45, 18, 0.24)'
+        }
+      },
+      label: {
+        show: true,
+        position: 'right',
+        color: '#f59e0b',
+        formatter: ({ value }: { value?: number }) => `¥${Number(value || 0).toFixed(1)}`
+      },
+      z: 2
+    }
+  ]
+}));
+
 const parseMinutes = (durationText: string) => {
   const value = Number(String(durationText ?? '').replace(/[^\d.]/g, ''));
   return Number.isFinite(value) ? value : 0;
@@ -1162,6 +1520,12 @@ const formatSavedCostPerRow = (row: WorkOrderRow) => {
   const savedAuditCost = ((originalAuditMinutes.value - auditMinutes) * opsRate.value) / 480;
   return `¥${(savedProofreadingCost + savedAuditCost).toFixed(1)}`;
 };
+
+const formatPersonDuration = (minutes: number) => `${minutes.toFixed(1)}min (${(minutes / 60).toFixed(1)}h)`;
+const formatPersonCost = (value: number) => `¥${value.toFixed(1)}`;
+const formatSavedCostForPersonRow = (row: EfficiencyPersonRow) => `¥${getSavedCostForPersonRow(row).toFixed(1)}`;
+const detailRowKey = (row: WorkOrderRow | EfficiencyPersonRow) =>
+  'person' in row ? `${row.department}-${row.person}` : row.sourceId;
 
 const parsePercentRatio = (value: string) => {
   const match = String(value ?? '').match(/-?\d+(?:\.\d+)?/);
@@ -1181,7 +1545,7 @@ const toInversePercent = (value: string) => {
 const customerHours = computed(() => Number(dashboardData.value.totalCSDays || 0) * 8);
 const opsHours = computed(() => Number(dashboardData.value.totalOpsDays || 0) * 8);
 
-const avgProcessingMinutes = computed(() => Number(metrics.value.avg_processing_duration_per_work_order || 0));
+const avgWorkOrderProcessingMinutes = computed(() => Number(metrics.value.avg_processing_duration_per_work_order || 0));
 const avgProofreadingMinutes = computed(() => Number(metrics.value.avg_proofreading_duration_per_work_order || 0));
 const avgAuditMinutes = computed(() => Number(metrics.value.avg_audit_duration_per_work_order || 0));
 
@@ -1194,6 +1558,41 @@ const avgTotalCostPerWorkOrder = computed(
 const totalFollowerCost = computed(() => (customerHours.value / 8) * csRate.value);
 const totalReviewerCost = computed(() => (opsHours.value / 8) * opsRate.value);
 const totalLaborCost = computed(() => totalFollowerCost.value + totalReviewerCost.value);
+
+const handleKpiClick = (item: { tab: TabName; focus?: EfficiencyFocus }) => {
+  if (activeAnalysisView.value === 'workorder') {
+    activeTab.value = item.tab;
+    return;
+  }
+
+  activeTab.value = 'cost';
+  activeEfficiencyFocus.value = item.focus || 'processing-count';
+};
+
+const isKpiActive = (item: { tab: TabName; focus?: EfficiencyFocus }) =>
+  activeAnalysisView.value === 'efficiency'
+    ? activeEfficiencyFocus.value === (item.focus || 'processing-count')
+    : activeTab.value === item.tab;
+
+const isEfficiencyPanelActive = (focus: EfficiencyFocus) =>
+  activeAnalysisView.value === 'efficiency' && activeEfficiencyFocus.value === focus;
+
+const handleAnalysisViewChange = (value: AnalysisView) => {
+  if (activeAnalysisView.value === value) return;
+  activeAnalysisView.value = value;
+
+  if (value === 'efficiency') {
+    lastWorkOrderTab.value = activeTab.value;
+    activeTab.value = 'cost';
+    activeEfficiencyFocus.value = 'processing-count';
+  } else {
+    activeTab.value = lastWorkOrderTab.value || 'conversion';
+  }
+
+  if (value === 'workorder' && orgPath.value.length > 1) {
+    orgPath.value = [orgPath.value[0] || '全公司'];
+  }
+};
 
 const handleOrgChange = (value: string[]) => {
   if (!value || value.length === 0) {
@@ -1213,6 +1612,23 @@ watch(
 );
 
 watch(
+  () => activeAnalysisView.value,
+  (view) => {
+    if (view === 'efficiency') {
+      if (activeTab.value !== 'cost') {
+        activeTab.value = 'cost';
+      }
+    } else if (!availableTabs.value.includes(activeTab.value)) {
+      activeTab.value = lastWorkOrderTab.value || 'conversion';
+    }
+
+    if (view === 'workorder' && orgPath.value.length > 1) {
+      orgPath.value = [orgPath.value[0] || '全公司'];
+    }
+  }
+);
+
+watch(
   orgPath,
   (path) => {
     if (!path || path.length === 0) {
@@ -1224,26 +1640,63 @@ watch(
   { deep: true }
 );
 
-watch([dateRange, () => filters.tenantId, orgPath, () => filters.source, () => activeTab.value], persistTopFilters, {
-  deep: true,
-  immediate: true
-});
+watch(
+  [
+    dateRange,
+    () => filters.tenantId,
+    orgPath,
+    () => filters.source,
+    () => activeAnalysisView.value,
+    () => activeTab.value,
+    () => csRate.value,
+    () => opsRate.value,
+    () => originalProofreadingMinutes.value,
+    () => originalAuditMinutes.value
+  ],
+  persistTopFilters,
+  {
+    deep: true,
+    immediate: true
+  }
+);
 
 const resetAllTablePages = () => {
-  for (const tab of tabList.map((item) => item.name)) {
+  for (const tab of ['conversion', 'quality', 'cost', 'efficiencyCost'] as TableStateKey[]) {
     tableStates[tab].page = 1;
   }
 };
 
 watch(
-  () => [startDate.value, endDate.value, filters.tenantId, filters.org, filters.source, csRate.value, opsRate.value],
+  () => [
+    startDate.value,
+    endDate.value,
+    filters.tenantId,
+    filters.org,
+    filters.source,
+    csRate.value,
+    opsRate.value,
+    originalProofreadingMinutes.value,
+    originalAuditMinutes.value
+  ],
   () => {
     resetAllTablePages();
   }
 );
 
 watch(
-  () => [activeTab.value, startDate.value, endDate.value, filters.tenantId, filters.org, filters.source, csRate.value, opsRate.value],
+  () => [
+    activeAnalysisView.value,
+    activeTab.value,
+    startDate.value,
+    endDate.value,
+    filters.tenantId,
+    filters.org,
+    filters.source,
+    csRate.value,
+    opsRate.value,
+    originalProofreadingMinutes.value,
+    originalAuditMinutes.value
+  ],
   (_, oldValues) => {
     if (!oldValues) return;
     triggerSwitching();
@@ -1268,9 +1721,16 @@ onBeforeUnmount(() => {
 });
 
 const handleExport = async () => {
+  const exportCount = activeAnalysisView.value === 'efficiency' ? personRows.value.length : allRows.value.length;
+  if (exportCount > 10000) {
+    ElMessage.warning('请缩小时间范围');
+    return;
+  }
+
   exporting.value = true;
   try {
     await exportDashboardWorkbook({
+      analysisView: activeAnalysisView.value,
       source: filters.source,
       tenant: selectedTenantName.value,
       org: filters.org,
@@ -1467,10 +1927,11 @@ const detailTitleMap: Record<TabName, string> = {
   cost: '效率成本表'
 };
 
-const detailTitle = computed(() => detailTitleMap[activeTab.value]);
-const detailSearchPlaceholder = computed(() =>
-  activeTab.value === 'conversion' ? '搜索工单ID/来源ID' : '搜索工单ID/工作单ID'
-);
+const detailTitle = computed(() => (activeAnalysisView.value === 'efficiency' ? '人效明细表' : detailTitleMap[activeTab.value]));
+const detailSearchPlaceholder = computed(() => {
+  if (activeAnalysisView.value === 'efficiency') return '搜索人员/业务部门';
+  return activeTab.value === 'conversion' ? '搜索工单ID/来源ID' : '搜索工单ID/工作单ID';
+});
 </script>
 
 <template>
@@ -1560,30 +2021,96 @@ const detailSearchPlaceholder = computed(() =>
             </el-space>
           </el-col>
         </el-row>
+        <div class="global-parameter-bar">
+          <div class="global-toolbar-main">
+            <el-space :size="10" align="center">
+              <div class="title-line"></div>
+              <el-text tag="b">分析维度</el-text>
+            </el-space>
+            <div
+              class="analysis-switch"
+              role="radiogroup"
+              aria-label="分析维度切换"
+              :style="{ '--analysis-index': String(analysisSwitchIndex), '--analysis-count': String(analysisViewOptions.length) }"
+            >
+              <span class="analysis-switch-thumb"></span>
+              <button
+                v-for="item in analysisViewOptions"
+                :key="item.value"
+                type="button"
+                class="analysis-switch-item"
+                :class="{ 'is-active': activeAnalysisView === item.value }"
+                @click="handleAnalysisViewChange(item.value)"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+            <el-text type="info" size="small" class="analysis-switch-note">
+              {{ activeAnalysisView === 'workorder' ? '查看整体单量、转化与识别质量' : '查看人员效率、人力成本与处理表现' }}
+            </el-text>
+          </div>
+          <div class="global-parameter-list">
+            <el-text type="info" size="small" class="global-parameter-inline-note">全局成本参数</el-text>
+            <div class="global-parameter-item">
+              <span class="global-parameter-label">客服成本</span>
+              <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="global-parameter-input" />
+              <el-text type="info" size="small">元/人天</el-text>
+            </div>
+            <div class="global-parameter-item">
+              <span class="global-parameter-label">操作成本</span>
+              <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="global-parameter-input" />
+              <el-text type="info" size="small">元/人天</el-text>
+            </div>
+            <div class="global-parameter-item">
+              <span class="global-parameter-label">原校对时长</span>
+              <el-input-number
+                v-model="originalProofreadingMinutes"
+                :step="0.5"
+                :min="0"
+                :precision="1"
+                controls-position="right"
+                class="global-parameter-input global-parameter-input-minutes"
+              />
+              <el-text type="info" size="small">min/单</el-text>
+            </div>
+            <div class="global-parameter-item">
+              <span class="global-parameter-label">原审核时长</span>
+              <el-input-number
+                v-model="originalAuditMinutes"
+                :step="0.5"
+                :min="0"
+                :precision="1"
+                controls-position="right"
+                class="global-parameter-input global-parameter-input-minutes"
+              />
+              <el-text type="info" size="small">min/单</el-text>
+            </div>
+          </div>
+        </div>
       </el-card>
 
       <div class="dashboard-main">
         <div class="dashboard-content" :class="{ 'is-switching': isSwitching }">
-        <el-row :gutter="16" class="kpi-row">
-        <el-col v-for="item in kpis" :key="item.label" :span="kpiColSpan">
-          <el-card shadow="never" class="kpi-card" :class="{ 'is-active': activeTab === item.tab }" @click="activeTab = item.tab">
-            <el-row justify="space-between" align="middle" class="kpi-head">
-              <el-text class="kpi-label">{{ item.label }}</el-text>
-              <el-tag :type="trendType(item.trend)" effect="light" round size="small" class="kpi-trend-tag" :class="`is-${item.trend}`">
-                {{ trendLabel(item.trend) }} {{ item.mom }}
-              </el-tag>
-            </el-row>
-            <el-text tag="b" class="kpi-value">{{ item.value }}</el-text>
-            <el-text type="info" size="small">较上周期</el-text>
-          </el-card>
-        </el-col>
-        </el-row>
+          <el-row :gutter="16" class="kpi-row">
+            <el-col v-for="item in kpis" :key="item.label" :span="kpiColSpan">
+              <el-card shadow="never" class="kpi-card" :class="{ 'is-active': isKpiActive(item) }" @click="handleKpiClick(item)">
+                <el-row justify="space-between" align="middle" class="kpi-head">
+                  <el-text class="kpi-label">{{ item.label }}</el-text>
+                  <el-tag :type="trendType(item.trend)" effect="light" round size="small" class="kpi-trend-tag" :class="`is-${item.trend}`">
+                    {{ trendLabel(item.trend) }} {{ item.mom }}
+                  </el-tag>
+                </el-row>
+                <el-text tag="b" class="kpi-value">{{ item.value }}</el-text>
+                <el-text type="info" size="small">较上周期</el-text>
+              </el-card>
+            </el-col>
+          </el-row>
 
         <el-card shadow="never" class="content-card">
           <div class="module-content">
             <el-space direction="vertical" :size="16" fill class="module-content-stack">
               
-              <template v-if="activeTab === 'conversion'">
+              <template v-if="activeAnalysisView === 'workorder' && activeTab === 'conversion'">
                 <el-row :gutter="16">
                   <el-col :span="16">
                     <el-card shadow="never" class="panel-card">
@@ -1597,7 +2124,7 @@ const detailSearchPlaceholder = computed(() =>
                             <span class="chart-legend-dot legend-stage-create"></span>成功创建工单
                           </span>
                           <span class="chart-legend-item">
-                            <span class="chart-legend-dot legend-stage-transfer"></span>转工作单
+                            <span class="chart-legend-dot legend-stage-transfer"></span>工作单
                           </span>
                           <span class="chart-legend-item">
                             <span class="chart-legend-dot legend-stage-submit"></span>成功提交委托
@@ -1655,7 +2182,7 @@ const detailSearchPlaceholder = computed(() =>
                 </el-row>
               </template>
 
-              <template v-else-if="activeTab === 'quality'">
+              <template v-else-if="activeAnalysisView === 'workorder' && activeTab === 'quality'">
                 <el-row :gutter="16">
                   <el-col :span="8">
                     <el-card shadow="never" class="panel-card">
@@ -1675,16 +2202,16 @@ const detailSearchPlaceholder = computed(() =>
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head panel-head-wrap">
                         <el-text tag="b">字段识别准确率（字段维度）</el-text>
-                        <el-text type="info" size="small">IDP / MAIL</el-text>
+                        <el-text type="info" size="small">{{ fieldRecognitionHint }}</el-text>
                       </el-row>
                       <el-table :data="fieldRecognitionRows" class="field-accuracy-table" height="360">
                         <el-table-column prop="field" label="字段名称" min-width="180" />
-                        <el-table-column prop="idpAccuracy" label="IDP" min-width="120" align="center">
+                        <el-table-column v-if="showFieldIdpColumn" prop="idpAccuracy" label="IDP" min-width="120" align="center">
                           <template #default="{ row }">
                             <el-text class="field-accuracy-idp">{{ row.idpAccuracy }}</el-text>
                           </template>
                         </el-table-column>
-                        <el-table-column prop="mailAccuracy" label="MAIL" min-width="120" align="center">
+                        <el-table-column v-if="showFieldMailColumn" prop="mailAccuracy" label="MAIL" min-width="120" align="center">
                           <template #default="{ row }">
                             <el-text class="field-accuracy-mail">{{ row.mailAccuracy }}</el-text>
                           </template>
@@ -1694,7 +2221,7 @@ const detailSearchPlaceholder = computed(() =>
                   </el-col>
                 </el-row>
               </template>
-              <template v-else>
+              <template v-else-if="activeAnalysisView === 'workorder'">
                 <el-space direction="vertical" :size="16" fill class="cost-stack">
                   <el-row :gutter="16">
                     <el-col :span="8">
@@ -1716,35 +2243,11 @@ const detailSearchPlaceholder = computed(() =>
                         <div class="metric-split">
                           <div class="metric-main processing-metric-main">
                             <el-text type="info" size="small">平均处理时长</el-text>
-                            <el-text tag="b" class="metric-value">{{ avgProcessingMinutes.toFixed(1) }}min</el-text>
+                            <el-text tag="b" class="metric-value">{{ avgWorkOrderProcessingMinutes.toFixed(1) }}min</el-text>
                           </div>
                           <div class="metric-side processing-side">
                             <el-text type="info" size="small" class="metric-side-item">校对时长：{{ avgProofreadingMinutes.toFixed(1) }} min</el-text>
                             <el-text type="info" size="small" class="metric-side-item">审核时长：{{ avgAuditMinutes.toFixed(1) }} min</el-text>
-                            <div class="processing-side-row">
-                              <el-text type="info" size="small">原校对时长</el-text>
-                              <el-input-number
-                                v-model="originalProofreadingMinutes"
-                                :step="0.5"
-                                :min="0"
-                                :precision="1"
-                                controls-position="right"
-                                class="rate-calc-input"
-                              />
-                              <el-text type="info" size="small">min</el-text>
-                            </div>
-                            <div class="processing-side-row">
-                              <el-text type="info" size="small">原审核时长</el-text>
-                              <el-input-number
-                                v-model="originalAuditMinutes"
-                                :step="0.5"
-                                :min="0"
-                                :precision="1"
-                                controls-position="right"
-                                class="rate-calc-input"
-                              />
-                              <el-text type="info" size="small">min</el-text>
-                            </div>
                           </div>
                         </div>
                       </el-card>
@@ -1761,11 +2264,6 @@ const detailSearchPlaceholder = computed(() =>
                                 <span class="metric-unit">h</span>
                               </div>
                             </div>
-                            <el-space :size="6" class="rate-inline">
-                              <span class="rate-label rate-label-cs">客服成本</span>
-                              <el-input-number v-model="csRate" :step="50" :min="0" controls-position="right" class="rate-input" />
-                              <el-text type="info" size="small">元/人天</el-text>
-                            </el-space>
                           </div>
                           <div class="rate-merged-row">
                             <div class="rate-merged-metric">
@@ -1775,11 +2273,6 @@ const detailSearchPlaceholder = computed(() =>
                                 <span class="metric-unit">h</span>
                               </div>
                             </div>
-                            <el-space :size="6" class="rate-inline">
-                              <span class="rate-label rate-label-ops">操作成本</span>
-                              <el-input-number v-model="opsRate" :step="50" :min="0" controls-position="right" class="rate-input" />
-                              <el-text type="info" size="small">元/人天</el-text>
-                            </el-space>
                           </div>
                         </div>
                       </el-card>
@@ -1844,10 +2337,69 @@ const detailSearchPlaceholder = computed(() =>
                   </el-row>
                 </el-space>
               </template>
+              <template v-else>
+                <el-space direction="vertical" :size="16" fill class="cost-stack efficiency-cost-stack">
+                  <el-row :gutter="16">
+                    <el-col :span="8">
+                      <div class="section-anchor">
+                        <el-card shadow="never" class="panel-card" :class="{ 'is-active': isEfficiencyPanelActive('processing-count') }">
+                          <el-row align="middle" class="panel-head efficiency-head-grid">
+                            <el-text tag="b" class="head-title-left">人员处理单量排行</el-text>
+                            <div class="chart-legend efficiency-center-legend">
+                              <span class="chart-legend-item">
+                                <span class="chart-legend-dot legend-stage-create"></span>处理单量
+                              </span>
+                            </div>
+                            <span class="head-right-spacer"></span>
+                          </el-row>
+                          <EChart :option="efficiencyPersonRankingOption" :active="activeAnalysisView === 'efficiency'" :height="chartHeight(350)" />
+                        </el-card>
+                      </div>
+                    </el-col>
+                    <el-col :span="8">
+                      <div class="section-anchor">
+                        <el-card shadow="never" class="panel-card" :class="{ 'is-active': isEfficiencyPanelActive('processing-duration') }">
+                          <el-row align="middle" class="panel-head efficiency-head-grid">
+                            <el-text tag="b" class="head-title-left">人员平均投入时长分布</el-text>
+                            <div class="chart-legend efficiency-center-legend">
+                              <span class="chart-legend-item">
+                                <span class="chart-legend-dot legend-total"></span>平均投入时长
+                              </span>
+                            </div>
+                            <span class="head-right-spacer"></span>
+                          </el-row>
+                          <EChart :option="efficiencyPersonDurationOption" :active="activeAnalysisView === 'efficiency'" :height="chartHeight(350)" />
+                        </el-card>
+                      </div>
+                    </el-col>
+                    <el-col :span="8">
+                      <div class="section-anchor">
+                        <el-card shadow="never" class="panel-card" :class="{ 'is-active': isEfficiencyPanelActive('labor-cost') }">
+                          <el-row align="middle" class="panel-head efficiency-head-grid">
+                            <el-text tag="b" class="head-title-left">人员平均人力成本分布</el-text>
+                            <div class="chart-legend efficiency-center-legend">
+                              <span class="chart-legend-item">
+                                <span class="chart-legend-dot legend-person-cost"></span>平均人力成本
+                              </span>
+                            </div>
+                            <span class="head-right-spacer"></span>
+                          </el-row>
+                          <EChart
+                            :option="efficiencyPersonCostOption"
+                            :active="activeAnalysisView === 'efficiency'"
+                            :height="chartHeight(350)"
+                          />
+                        </el-card>
+                      </div>
+                    </el-col>
+                  </el-row>
+                </el-space>
+              </template>
             </el-space>
           </div>
         </el-card>
 
+        <div>
         <el-card shadow="never" class="detail-card">
         <el-row justify="space-between" align="middle" class="detail-toolbar">
           <el-space :size="8">
@@ -1863,38 +2415,48 @@ const detailSearchPlaceholder = computed(() =>
           </el-input>
         </el-row>
 
-        <el-table :data="pagedRows" row-key="sourceId" class="detail-table">
-          <template v-if="activeTab === 'conversion'">
-            <el-table-column label="&#26469;&#28304;ID" min-width="110">
+        <el-table :data="pagedRows" :row-key="detailRowKey" class="detail-table">
+          <template v-if="activeAnalysisView === 'efficiency'">
+            <el-table-column label="人员" prop="person" min-width="110" />
+            <el-table-column label="业务部门（分公司）" prop="department" min-width="150" />
+            <el-table-column label="处理单量" prop="processingCount" min-width="120" align="center" />
+            <el-table-column label="平均投入时长" min-width="150" align="center">
+              <template #default="{ row }">
+                <el-text class="duration-inline">{{ formatPersonDuration(row.avgProcessingMinutes) }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="投入总时长" min-width="170" align="center">
+              <template #default="{ row }">
+                <el-text class="duration-inline">{{ formatPersonDuration(row.totalProcessingMinutes) }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="时长成本" min-width="130" align="center">
+              <template #default="{ row }">
+                <el-text class="processing-cost-text">{{ formatPersonCost(row.processingCostValue) }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="节省成本" min-width="130" align="center">
+              <template #default="{ row }">
+                <el-text class="saved-cost-text">{{ formatSavedCostForPersonRow(row) }}</el-text>
+              </template>
+            </el-table-column>
+          </template>
+          <template v-else-if="activeTab === 'conversion'">
+            <el-table-column label="来源ID" min-width="110">
               <template #default="{ row }">
                 <el-text class="id-text">{{ row.sourceId }}</el-text>
               </template>
             </el-table-column>
-            <el-table-column label="&#24037;&#21333;ID" min-width="110">
+            <el-table-column label="工单ID" min-width="110">
               <template #default="{ row }">
                 <el-text class="id-text">{{ row.orderId }}</el-text>
               </template>
             </el-table-column>
-          </template>
-          <template v-else>
-            <el-table-column label="&#24037;&#21333;ID" min-width="110">
+            <el-table-column label="接单来源" min-width="100">
               <template #default="{ row }">
-                <el-text class="id-text">{{ row.orderId }}</el-text>
+                <el-tag effect="light" round size="small" class="source-pill" :class="`source-${row.sourceKey}`">{{ row.source }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="&#24037;&#20316;&#21333;ID" min-width="110">
-              <template #default="{ row }">
-                <el-text class="id-text">{{ row.workOrderId }}</el-text>
-              </template>
-            </el-table-column>
-          </template>
-          <el-table-column label="接单来源" min-width="100">
-            <template #default="{ row }">
-              <el-tag effect="light" round size="small" class="source-pill" :class="`source-${row.sourceKey}`">{{ row.source }}</el-tag>
-            </template>
-          </el-table-column>
-
-          <template v-if="activeTab === 'conversion'">
             <el-table-column label="状态" min-width="90">
               <template #default="{ row }">
                 <span class="status-text" :class="row.status.includes('成功') ? 'status-success' : 'status-failed'">
@@ -1903,9 +2465,9 @@ const detailSearchPlaceholder = computed(() =>
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="&#28431;&#21333;&#21407;&#22240;" prop="reason" min-width="140" />
-            <el-table-column label="&#36319;&#36827;&#20154;" prop="user" min-width="90" />
-            <el-table-column label="&#21019;&#24314;&#26102;&#38388;" prop="createdAt" min-width="170" />
+            <el-table-column label="漏单原因" prop="reason" min-width="140" />
+            <el-table-column label="跟进人" prop="user" min-width="90" />
+            <el-table-column label="创建时间" prop="createdAt" min-width="170" />
             <el-table-column label="操作" fixed="right" width="90" align="center">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openBusinessDetail(row)">详情</el-button>
@@ -1913,6 +2475,21 @@ const detailSearchPlaceholder = computed(() =>
             </el-table-column>
           </template>
           <template v-else-if="activeTab === 'quality'">
+            <el-table-column label="工单ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.orderId }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="工作单ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.workOrderId }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="接单来源" min-width="100">
+              <template #default="{ row }">
+                <el-tag effect="light" round size="small" class="source-pill" :class="`source-${row.sourceKey}`">{{ row.source }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="文件识别准确率" prop="fileRecognitionAccuracy" min-width="130">
               <template #default="{ row }">
                 <el-text class="accuracy-rate-text">{{ row.fileRecognitionAccuracy }}</el-text>
@@ -1948,6 +2525,21 @@ const detailSearchPlaceholder = computed(() =>
             </el-table-column>
           </template>
           <template v-else>
+            <el-table-column label="工单ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.orderId }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="工作单ID" min-width="110">
+              <template #default="{ row }">
+                <el-text class="id-text">{{ row.workOrderId }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="接单来源" min-width="100">
+              <template #default="{ row }">
+                <el-tag effect="light" round size="small" class="source-pill" :class="`source-${row.sourceKey}`">{{ row.source }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="节省成本" min-width="110">
               <template #default="{ row }">
                 <el-text class="saved-cost-text">{{ formatSavedCostPerRow(row) }}</el-text>
@@ -1996,6 +2588,7 @@ const detailSearchPlaceholder = computed(() =>
           />
         </div>
         </el-card>
+        </div>
 
         </div>
         <transition name="switch-fade">
@@ -2250,6 +2843,71 @@ const detailSearchPlaceholder = computed(() =>
   min-height: 54px;
 }
 
+.global-parameter-bar {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e8edf6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.global-toolbar-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.global-parameter-list {
+  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.global-parameter-inline-note {
+  flex-shrink: 0;
+}
+
+.global-parameter-item {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: #f8faff;
+  border: 1px solid #dfe7f5;
+  white-space: nowrap;
+}
+
+.global-parameter-label {
+  color: var(--brand-text-normal);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.global-parameter-input {
+  width: 118px;
+}
+
+.global-parameter-input-minutes {
+  width: 106px;
+}
+
+.global-parameter-input :deep(.el-input__wrapper) {
+  min-height: 28px;
+}
+
+.global-parameter-input :deep(.el-input__inner) {
+  text-align: center;
+}
+
 .brand-block {
   align-items: center;
 }
@@ -2407,6 +3065,63 @@ const detailSearchPlaceholder = computed(() =>
   font-weight: 700;
 }
 
+.analysis-switch {
+  --analysis-index: 0;
+  --analysis-count: 2;
+  min-width: 224px;
+  height: 38px;
+  padding: 3px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(var(--analysis-count), minmax(0, 1fr));
+  align-items: center;
+  position: relative;
+  background: #edf1f7;
+  border: 1px solid #d7dfeb;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.analysis-switch-thumb {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: calc((100% - 6px) / var(--analysis-count));
+  height: calc(100% - 6px);
+  border-radius: 10px;
+  background: linear-gradient(135deg, #4f46ff 0%, #2558ff 100%);
+  box-shadow: 0 8px 16px rgba(79, 70, 255, 0.22);
+  transform: translateX(calc(var(--analysis-index) * 100%));
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s ease;
+}
+
+.analysis-switch-item {
+  position: relative;
+  z-index: 1;
+  height: 30px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--brand-text-normal);
+  font-size: 14px;
+  font-weight: 700;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.analysis-switch-item:hover {
+  color: var(--brand-primary);
+}
+
+.analysis-switch-item.is-active {
+  color: #ffffff;
+}
+
+.analysis-switch-note {
+  flex-shrink: 0;
+}
+
 .filter-form :deep(.el-form-item) {
   margin-bottom: 0;
 }
@@ -2483,6 +3198,11 @@ const detailSearchPlaceholder = computed(() =>
 
 .panel-card {
   height: 100%;
+}
+
+.panel-card.is-active {
+  border-color: var(--brand-primary);
+  box-shadow: 0 10px 24px rgba(79, 70, 255, 0.14);
 }
 
 .detail-card {
@@ -2670,6 +3390,10 @@ const detailSearchPlaceholder = computed(() =>
 
 .legend-audit {
   background: #10b981;
+}
+
+.legend-person-cost {
+  background: #f59e0b;
 }
 
 .legend-submit {
@@ -3092,15 +3816,6 @@ const detailSearchPlaceholder = computed(() =>
   padding-top: 0;
 }
 
-.processing-side-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  width: auto;
-  white-space: nowrap;
-}
-
 .processing-side .metric-side-item {
   align-self: flex-end;
   text-align: right;
@@ -3140,6 +3855,10 @@ const detailSearchPlaceholder = computed(() =>
   width: 100%;
   text-align: left;
   align-self: flex-start;
+}
+
+.efficiency-inline-note {
+  font-weight: 700;
 }
 
 .rate-card-main {
@@ -3189,17 +3908,6 @@ const detailSearchPlaceholder = computed(() =>
   align-items: flex-start;
 }
 
-.rate-inline {
-  align-items: center;
-  justify-content: flex-end;
-  white-space: nowrap;
-}
-
-.rate-inline :deep(.el-space__item) {
-  display: inline-flex;
-  align-items: center;
-}
-
 .rate-controls {
   display: flex;
   flex-direction: column;
@@ -3208,74 +3916,6 @@ const detailSearchPlaceholder = computed(() =>
   gap: 4px;
   flex-shrink: 0;
   align-self: flex-start;
-}
-
-.rate-input {
-  width: 116px;
-}
-
-.rate-input :deep(.el-input__wrapper) {
-  min-height: 28px;
-}
-
-.rate-input :deep(.el-input__inner) {
-  text-align: center;
-}
-
-.rate-label {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.rate-label-cs {
-  color: #0ea5e9;
-}
-
-.rate-label-ops {
-  color: #f59e0b;
-}
-
-.rate-calculator-inline {
-  margin-top: 2px;
-  margin-bottom: 2px;
-  width: 100%;
-  align-items: center;
-  justify-content: flex-end;
-  white-space: nowrap;
-}
-
-.rate-calculator-inline :deep(.el-space__item) {
-  display: inline-flex;
-  align-items: center;
-}
-
-.rate-calculator-inline-top {
-  margin-top: 0;
-  margin-bottom: 0;
-  width: auto;
-  align-items: center;
-  justify-content: flex-end;
-  white-space: nowrap;
-}
-
-.rate-calculator-inline-top :deep(.el-space__item) {
-  display: inline-flex;
-  align-items: center;
-}
-
-.rate-calc-input {
-  width: 92px;
-}
-
-.rate-calc-input :deep(.el-input__wrapper) {
-  min-height: 24px;
-}
-
-.rate-calc-input :deep(.el-input__inner) {
-  text-align: center;
 }
 
 .metric-value {
@@ -3315,6 +3955,10 @@ const detailSearchPlaceholder = computed(() =>
 
 .detail-toolbar {
   margin-bottom: 12px;
+}
+
+.section-anchor {
+  width: 100%;
 }
 
 .title-line {

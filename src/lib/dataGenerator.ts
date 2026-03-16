@@ -64,6 +64,19 @@ type WorkOrderRecord = {
   totalTime: string;
 };
 
+type PersonEfficiencyRecord = {
+  person: string;
+  department: string;
+  processingCount: number;
+  avgProcessingCount: number;
+  avgProcessingMinutes: number;
+  avgProofreadingMinutes: number;
+  avgAuditMinutes: number;
+  totalProcessingMinutes: number;
+  processingCostValue: number;
+  reworkCount: number;
+};
+
 const seededRandom = (seed: string) => {
   let hash = 0;
   for (let i = 0; i < seed.length; i++) {
@@ -203,15 +216,11 @@ export const getDynamicData = (
     reviewers: reviewerDept?.members.length ? [...reviewerDept.members] : ['操作A', '操作B']
   };
   const allUsers = [...roleUsers.followers, ...roleUsers.reviewers];
+  const personDepartmentMap = new Map<string, string>();
+  roleUsers.followers.forEach((name) => personDepartmentMap.set(name, followerDept?.name || '客服部门'));
+  roleUsers.reviewers.forEach((name) => personDepartmentMap.set(name, reviewerDept?.name || '操作部门'));
 
-  let peopleCount = 1;
-  if (orgScopeInfo.scope === 'all') {
-    peopleCount = Math.max(1, allUsers.length);
-  } else if (orgScopeInfo.scope === 'dept-followers') {
-    peopleCount = Math.max(1, roleUsers.followers.length);
-  } else if (orgScopeInfo.scope === 'dept-reviewers') {
-    peopleCount = Math.max(1, roleUsers.reviewers.length);
-  }
+  const peopleCount = Math.max(1, allUsers.length);
 
   let sourceFactor = 1;
   if (source === 'email') sourceFactor = Math.max(0.2, 0.6 * (1 + tenantEmailBias));
@@ -296,32 +305,18 @@ export const getDynamicData = (
 
   const sourceLabels = source === 'all' ? ['邮件', '文件'] : [source === 'email' ? '邮件' : '文件'];
 
-  let userPool = [...allUsers];
-  let auditorPool = [...allUsers];
-  let specificFollower: string | null = null;
-  let specificReviewer: string | null = null;
+  const userPool = roleUsers.followers.length > 0 ? [...roleUsers.followers] : [...allUsers];
+  const auditorPool = roleUsers.reviewers.length > 0 ? [...roleUsers.reviewers] : [...allUsers];
+  const isOrderInOrgScope = (user: string, auditor: string) => {
+    if (orgScopeInfo.scope === 'all') return true;
+    if (orgScopeInfo.scope === 'dept-followers') return roleUsers.followers.includes(user);
+    if (orgScopeInfo.scope === 'dept-reviewers') return roleUsers.reviewers.includes(auditor);
+    if (orgScopeInfo.scope === 'user-followers') return user === orgScopeInfo.person;
+    if (orgScopeInfo.scope === 'user-reviewers') return auditor === orgScopeInfo.person;
 
-  if (orgScopeInfo.scope === 'dept-followers') {
-    userPool = [...roleUsers.followers];
-    auditorPool = [...allUsers];
-  } else if (orgScopeInfo.scope === 'dept-reviewers') {
-    userPool = [...allUsers];
-    auditorPool = [...roleUsers.reviewers];
-  } else if (orgScopeInfo.scope === 'user-followers') {
-    specificFollower = orgScopeInfo.person || roleUsers.followers[0] || null;
-    userPool = specificFollower ? [specificFollower] : [...roleUsers.followers];
-    auditorPool = [...allUsers];
-  } else if (orgScopeInfo.scope === 'user-reviewers') {
-    specificReviewer = orgScopeInfo.person || roleUsers.reviewers[0] || null;
-    userPool = [...allUsers];
-    auditorPool = specificReviewer ? [specificReviewer] : [...roleUsers.reviewers];
-  } else if (orgScopeInfo.scope === 'custom') {
-    const normalized = (orgScopeInfo.person || '').trim() || '管理员';
-    specificFollower = normalized;
-    specificReviewer = normalized;
-    userPool = [normalized];
-    auditorPool = [normalized];
-  }
+    const normalized = (orgScopeInfo.person || '').trim();
+    return user === normalized || auditor === normalized;
+  };
 
   const reasons = ['接口超时', '文件解析失败'];
 
@@ -337,7 +332,7 @@ export const getDynamicData = (
   let totalMissRecalled = 0;
 
   const workOrders: WorkOrderRecord[] = Array.from({ length: targetWorkOrderCount }).map((_, i) => {
-    const seed = `${tenantId}|${org}|${source}|${startDate}|${endDate}|${i}`;
+    const seed = `${tenantId}|${source}|${startDate}|${endDate}|${i}`;
 
     const bucketIndex = Math.floor(seededRandom(`${seed}|bucket`) * points.length);
     const bucket = points[bucketIndex] || points[0];
@@ -354,14 +349,10 @@ export const getDynamicData = (
     const status: '成功' | '失败' = seededRandom(`${seed}|status`) > 0.08 ? '成功' : '失败';
     const reason = status === '失败' ? reasons[Math.floor(seededRandom(`${seed}|reason`) * reasons.length)] : '-';
 
-    const resolvedUserPool = userPool.length > 0 ? userPool : [...allUsers];
-    const resolvedAuditorPool = auditorPool.length > 0 ? auditorPool : [...allUsers];
+    const user = userPool[Math.floor(seededRandom(`${seed}|user`) * userPool.length)] || allUsers[0] || '管理员';
+    let auditor = auditorPool[Math.floor(seededRandom(`${seed}|auditor`) * auditorPool.length)] || allUsers[0] || '管理员';
 
-    const user = specificFollower || resolvedUserPool[Math.floor(seededRandom(`${seed}|user`) * resolvedUserPool.length)];
-    let auditor =
-      specificReviewer || resolvedAuditorPool[Math.floor(seededRandom(`${seed}|auditor`) * resolvedAuditorPool.length)];
-
-    if (!specificReviewer && auditor === user) {
+    if (auditor === user) {
       const fallbackPool = roleUsers.reviewers.filter((name) => name !== user);
       const finalPool = fallbackPool.length > 0 ? fallbackPool : allUsers.filter((name) => name !== user);
       if (finalPool.length > 0) {
@@ -416,17 +407,6 @@ export const getDynamicData = (
 
     const noChange = noChangeFromPrefilled + noChangeFromEmpty;
 
-    totalFieldCount += fieldCount;
-    totalRecognizedCorrect += recognizedCorrect;
-    totalFileFieldCount += fileFieldCount;
-    totalFileRecognizedCorrect += fileRecognizedCorrect;
-    totalMailFieldCount += mailFieldCount;
-    totalMailRecognizedCorrect += mailRecognizedCorrect;
-    totalNoChange += noChange;
-    totalChanged += changed;
-    totalSupplemented += supplemented;
-    totalMissRecalled += missRecalled;
-
     const sourceId = toFiveDigitId(`${seed}|sid`, i * 23 + 7);
     const orderId = status === '失败' ? '' : toFiveDigitId(`${seed}|oid`, i * 17);
     const workOrderId = status === '失败' ? '' : toFiveDigitId(`${seed}|woid`, i * 23 + 7);
@@ -438,8 +418,21 @@ export const getDynamicData = (
       processingMinutes + reworkCount * 18 + 8 + Math.round(seededRandom(`${seed}|ended_at`) * 36);
     const endedAtTs = createdAtTs + Math.max(5, finishLagMinutes) * 60 * 1000;
     const endedAt = status === '失败' ? '-' : formatDateTime(new Date(Math.max(createdAtTs, endedAtTs)));
-    const follower = status === '失败' ? '' : user;
-    const reviewer = status === '失败' ? '' : auditor;
+    const follower = user;
+    const reviewer = auditor;
+
+    if (isOrderInOrgScope(follower, reviewer)) {
+      totalFieldCount += fieldCount;
+      totalRecognizedCorrect += recognizedCorrect;
+      totalFileFieldCount += fileFieldCount;
+      totalFileRecognizedCorrect += fileRecognizedCorrect;
+      totalMailFieldCount += mailFieldCount;
+      totalMailRecognizedCorrect += mailRecognizedCorrect;
+      totalNoChange += noChange;
+      totalChanged += changed;
+      totalSupplemented += supplemented;
+      totalMissRecalled += missRecalled;
+    }
 
     return {
       orderId,
@@ -478,6 +471,8 @@ export const getDynamicData = (
     };
   });
 
+  const scopedWorkOrders = workOrders.filter((order) => isOrderInOrgScope(order.user, order.auditor));
+
   const bucketStats = points.map(() => ({
     submissions: 0,
     reworkOrders: 0,
@@ -490,7 +485,41 @@ export const getDynamicData = (
     costSum: 0
   }));
 
-  for (const order of workOrders) {
+  const personStats = new Map<
+    string,
+    {
+      person: string;
+      department: string;
+      processingCount: number;
+      totalProcessingMinutes: number;
+      totalProofreadingMinutes: number;
+      totalAuditMinutes: number;
+      proofreadingOrderCount: number;
+      auditOrderCount: number;
+      processingCostValue: number;
+      reworkCount: number;
+    }
+  >();
+
+  const ensurePersonStat = (person: string) => {
+    if (!personStats.has(person)) {
+      personStats.set(person, {
+        person,
+        department: personDepartmentMap.get(person) || orgScopeInfo.person || '自定义组织',
+        processingCount: 0,
+        totalProcessingMinutes: 0,
+        totalProofreadingMinutes: 0,
+        totalAuditMinutes: 0,
+        proofreadingOrderCount: 0,
+        auditOrderCount: 0,
+        processingCostValue: 0,
+        reworkCount: 0
+      });
+    }
+    return personStats.get(person)!;
+  };
+
+  for (const order of scopedWorkOrders) {
     if (order.status !== '成功') continue;
     const stat = bucketStats[order.bucketIndex];
     stat.submissions += 1;
@@ -502,6 +531,64 @@ export const getDynamicData = (
     stat.csDaysSum += order.csDays;
     stat.opsDaysSum += order.opsDays;
     stat.costSum += order.processingCostValue;
+
+    const perOrderContributions = new Map<
+      string,
+      {
+        totalProcessingMinutes: number;
+        totalProofreadingMinutes: number;
+        totalAuditMinutes: number;
+        proofreadingOrderCount: number;
+        auditOrderCount: number;
+        processingCostValue: number;
+        reworkCount: number;
+      }
+    >();
+
+    if (order.user) {
+      perOrderContributions.set(order.user, {
+        totalProcessingMinutes: order.proofreadingMinutes,
+        totalProofreadingMinutes: order.proofreadingMinutes,
+        totalAuditMinutes: 0,
+        proofreadingOrderCount: 1,
+        auditOrderCount: 0,
+        processingCostValue: order.proofreadingCostValue,
+        reworkCount: order.reworkCount
+      });
+    }
+
+    if (order.auditor) {
+      const currentContribution = perOrderContributions.get(order.auditor);
+      if (currentContribution) {
+        currentContribution.totalProcessingMinutes += order.auditMinutes;
+        currentContribution.totalAuditMinutes += order.auditMinutes;
+        currentContribution.auditOrderCount += 1;
+        currentContribution.processingCostValue += order.auditCostValue;
+        currentContribution.reworkCount = Math.max(currentContribution.reworkCount, order.reworkCount);
+      } else {
+        perOrderContributions.set(order.auditor, {
+          totalProcessingMinutes: order.auditMinutes,
+          totalProofreadingMinutes: 0,
+          totalAuditMinutes: order.auditMinutes,
+          proofreadingOrderCount: 0,
+          auditOrderCount: 1,
+          processingCostValue: order.auditCostValue,
+          reworkCount: order.reworkCount
+        });
+      }
+    }
+
+    perOrderContributions.forEach((contribution, person) => {
+      const personStat = ensurePersonStat(person);
+      personStat.processingCount += 1;
+      personStat.totalProcessingMinutes += contribution.totalProcessingMinutes;
+      personStat.totalProofreadingMinutes += contribution.totalProofreadingMinutes;
+      personStat.totalAuditMinutes += contribution.totalAuditMinutes;
+      personStat.proofreadingOrderCount += contribution.proofreadingOrderCount;
+      personStat.auditOrderCount += contribution.auditOrderCount;
+      personStat.processingCostValue += contribution.processingCostValue;
+      personStat.reworkCount += contribution.reworkCount;
+    });
   }
 
   const efficiency = points.map((point, idx) => {
@@ -546,6 +633,65 @@ export const getDynamicData = (
   const totalCalculatedCost = bucketStats.reduce((acc, stat) => acc + stat.costSum, 0);
   const workOrderSubmitVolume = bucketStats.reduce((acc, stat) => acc + stat.submissions, 0);
 
+  let personRows = Array.from(personStats.values());
+  if (orgScopeInfo.scope === 'dept-followers') {
+    personRows = personRows.filter((item) => roleUsers.followers.includes(item.person));
+  } else if (orgScopeInfo.scope === 'dept-reviewers') {
+    personRows = personRows.filter((item) => roleUsers.reviewers.includes(item.person));
+  } else if (
+    orgScopeInfo.scope === 'user-followers' ||
+    orgScopeInfo.scope === 'user-reviewers' ||
+    orgScopeInfo.scope === 'custom'
+  ) {
+    personRows = personRows.filter((item) => item.person === orgScopeInfo.person);
+  }
+
+  const toPersonEfficiencyRecord = (item: {
+    person: string;
+    department: string;
+    processingCount: number;
+    totalProcessingMinutes: number;
+    totalProofreadingMinutes: number;
+    totalAuditMinutes: number;
+    proofreadingOrderCount: number;
+    auditOrderCount: number;
+    processingCostValue: number;
+    reworkCount: number;
+  }): PersonEfficiencyRecord => ({
+    person: item.person,
+    department: item.department,
+    processingCount: item.processingCount,
+    avgProcessingCount: 0,
+    avgProcessingMinutes: item.processingCount > 0 ? round1(item.totalProcessingMinutes / item.processingCount) : 0,
+    avgProofreadingMinutes:
+      item.proofreadingOrderCount > 0 ? round1(item.totalProofreadingMinutes / item.proofreadingOrderCount) : 0,
+    avgAuditMinutes: item.auditOrderCount > 0 ? round1(item.totalAuditMinutes / item.auditOrderCount) : 0,
+    totalProcessingMinutes: round1(item.totalProcessingMinutes),
+    processingCostValue: round1(item.processingCostValue),
+    reworkCount: item.reworkCount
+  });
+
+  let personTableData: PersonEfficiencyRecord[] = personRows.map((item) => toPersonEfficiencyRecord(item));
+
+  const participantCount = Math.max(1, personTableData.length);
+  const totalParticipantProcessingCount = personTableData.reduce((sum, item) => sum + Math.max(0, item.processingCount), 0);
+  const totalParticipantProcessingMinutes = personTableData.reduce((sum, item) => sum + Math.max(0, item.totalProcessingMinutes), 0);
+  const totalParticipantProcessingCost = personTableData.reduce((sum, item) => sum + Math.max(0, item.processingCostValue), 0);
+  const avgProcessingCountPerPerson = participantCount > 0 ? totalParticipantProcessingCount / participantCount : 0;
+  const avgEfficiencyInputDurationPerPerson =
+    totalParticipantProcessingCount > 0 ? totalParticipantProcessingMinutes / totalParticipantProcessingCount : 0;
+  const avgEfficiencyLaborCostPerPerson =
+    totalParticipantProcessingCount > 0 ? totalParticipantProcessingCost / totalParticipantProcessingCount : 0;
+  personTableData = personTableData
+    .map((item) => ({
+      ...item,
+      avgProcessingCount: round1(avgProcessingCountPerPerson)
+    }))
+    .sort((left, right) => {
+      if (right.processingCount !== left.processingCount) return right.processingCount - left.processingCount;
+      return left.avgProcessingMinutes - right.avgProcessingMinutes;
+    });
+
   const avgProofreadingDurationPerWorkOrder =
     workOrderSubmitVolume > 0
       ? bucketStats.reduce((acc, stat) => acc + stat.proofSum, 0) / workOrderSubmitVolume
@@ -589,9 +735,9 @@ export const getDynamicData = (
     A: Math.max(0, Math.min(100, qualityValues[idx] ?? item.A))
   }));
 
-  const submitToTransferRate = 0.9 + seededRandom(`${tenantId}|${org}|${source}|submit_transfer`) * 0.06;
-  const transferToCreateRate = 0.94 + seededRandom(`${tenantId}|${org}|${source}|transfer_create`) * 0.04;
-  const sourceToCreateRate = 0.84 + seededRandom(`${tenantId}|${org}|${source}|source_create`) * 0.1;
+  const submitToTransferRate = 0.9 + seededRandom(`${tenantId}|${source}|submit_transfer`) * 0.06;
+  const transferToCreateRate = 0.94 + seededRandom(`${tenantId}|${source}|transfer_create`) * 0.04;
+  const sourceToCreateRate = 0.84 + seededRandom(`${tenantId}|${source}|source_create`) * 0.1;
 
   const submittedCount = workOrderSubmitVolume;
   const transferredCount = Math.max(submittedCount, Math.round(submittedCount / submitToTransferRate));
@@ -599,7 +745,7 @@ export const getDynamicData = (
   const sourceInputCount = Math.max(createdCount, Math.round(createdCount / sourceToCreateRate));
   const missedCount = Math.max(0, sourceInputCount - createdCount);
 
-  const reasonWeightA = 0.5 + seededRandom(`${tenantId}|${org}|${source}|reasonA`) * 0.25;
+  const reasonWeightA = 0.5 + seededRandom(`${tenantId}|${source}|reasonA`) * 0.25;
   const reasonValueA = Math.round(missedCount * reasonWeightA);
   const reasonValueB = Math.max(0, missedCount - reasonValueA);
 
@@ -616,7 +762,7 @@ export const getDynamicData = (
     value: funnelValues[idx] ?? item.value
   }));
 
-  const sourceSplitSeed = seededRandom(`${tenantId}|${org}|${startDate}|${endDate}|source_split`);
+  const sourceSplitSeed = seededRandom(`${tenantId}|${startDate}|${endDate}|source_split`);
   const emailShare =
     source === 'email'
       ? 1
@@ -691,8 +837,8 @@ export const getDynamicData = (
     };
   });
 
-  const maxDetailRows = Math.min(1200, workOrders.length);
-  const tableData = workOrders.slice(0, maxDetailRows).map((order) => ({
+  const maxDetailRows = Math.min(1200, scopedWorkOrders.length);
+  const tableData = scopedWorkOrders.slice(0, maxDetailRows).map((order) => ({
     orderId: order.orderId,
     workOrderId: order.workOrderId,
     sourceId: order.sourceId,
@@ -747,12 +893,17 @@ export const getDynamicData = (
       field_supplement_rate: fieldSupplementRate / 100,
       field_missrecall_rate: fieldMissRecallRate / 100,
       work_order_submit_volume: workOrderSubmitVolume,
+      participant_user_count: participantCount,
+      avg_processing_count_per_person: avgProcessingCountPerPerson,
+      avg_efficiency_input_duration_per_person: avgEfficiencyInputDurationPerPerson,
+      avg_efficiency_labor_cost_per_person: avgEfficiencyLaborCostPerPerson,
       avg_follower_cost_per_work_order: workOrderSubmitVolume > 0 ? (totalCSDays * csRate) / workOrderSubmitVolume : 0,
       total_follower_cost: totalCSDays * csRate,
       avg_reviewer_cost_per_work_order: workOrderSubmitVolume > 0 ? (totalOpsDays * opsRate) / workOrderSubmitVolume : 0,
       total_reviewer_cost: totalOpsDays * opsRate,
       avg_total_cost_per_work_order: workOrderSubmitVolume > 0 ? totalCalculatedCost / workOrderSubmitVolume : 0,
       total_labor_cost: totalCalculatedCost
-    }
+    },
+    personTableData
   };
 };

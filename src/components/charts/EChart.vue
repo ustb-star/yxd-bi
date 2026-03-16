@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as echarts from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { BarChart, LineChart, PieChart, RadarChart } from 'echarts/charts';
+import { BarChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
 import {
   DatasetComponent,
   GridComponent,
@@ -23,6 +23,7 @@ echarts.use([
   RadarComponent,
   BarChart,
   LineChart,
+  ScatterChart,
   PieChart,
   RadarChart
 ]);
