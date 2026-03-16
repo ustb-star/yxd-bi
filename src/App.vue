@@ -307,13 +307,10 @@ const analysisSwitchIndex = computed(() => {
 });
 
 const fullOrgTree = computed<OrgTreeNode[]>(() => companyOrgTree);
-const efficiencyOrgTree = computed<OrgTreeNode[]>(() =>
-  fullOrgTree.value.filter((node) => node.value !== allCompanyNode.value)
-);
 
 const orgTree = computed<OrgTreeNode[]>(() => {
   if (activeAnalysisView.value === 'efficiency') {
-    return efficiencyOrgTree.value;
+    return fullOrgTree.value;
   }
 
   return [
@@ -341,7 +338,7 @@ const orgProps = {
   emitPath: true
 };
 
-const orgSelectorPlaceholder = computed(() => (activeAnalysisView.value === 'workorder' ? '公司' : '部门/个人'));
+const orgSelectorPlaceholder = computed(() => (activeAnalysisView.value === 'workorder' ? '公司' : '公司/部门/个人'));
 const getOrgTreeByView = (view: AnalysisView) =>
   view === 'workorder'
     ? [
@@ -350,15 +347,12 @@ const getOrgTreeByView = (view: AnalysisView) =>
           label: allCompanyNode.label
         }
       ]
-    : efficiencyOrgTree.value;
+    : fullOrgTree.value;
 const getDefaultOrgPath = (view: AnalysisView) => {
-  if (view === 'workorder') return [allCompanyNode.value];
-  const firstDept = efficiencyOrgTree.value[0];
-  return firstDept ? [firstDept.value] : [allCompanyNode.value];
+  return [allCompanyNode.value];
 };
 const isOrgPathAllowedForView = (path: string[], view: AnalysisView) => {
   if (!isOrgPathValid(path, getOrgTreeByView(view))) return false;
-  if (view === 'efficiency' && path[0] === allCompanyNode.value) return false;
   return true;
 };
 const applyOrgPathForView = (view: AnalysisView, path?: string[]) => {
