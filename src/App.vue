@@ -2164,7 +2164,7 @@ const detailSearchPlaceholder = computed(() => {
 
               <template v-else-if="activeAnalysisView === 'workorder' && activeTab === 'quality'">
                 <el-row :gutter="16">
-                  <el-col :span="8">
+                  <el-col :span="16">
                     <el-card shadow="never" class="panel-card">
                       <el-row align="middle" class="panel-head quality-head-grid">
                         <el-text tag="b" class="head-title-left">核心质量指标（工作单维度）</el-text>
@@ -2178,7 +2178,7 @@ const detailSearchPlaceholder = computed(() => {
                       <EChart :option="qualityRadarOption" :active="activeTab === 'quality'" :height="chartHeight(360)" />
                     </el-card>
                   </el-col>
-                  <el-col :span="16">
+                  <el-col :span="8">
                     <el-card shadow="never" class="panel-card">
                       <el-row justify="space-between" align="middle" class="panel-head panel-head-wrap">
                         <el-text tag="b">字段识别准确率（字段维度）</el-text>
